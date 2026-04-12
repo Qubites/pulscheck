@@ -117,6 +117,10 @@ function createScope(name, opts, deps) {
     source: "scope"
   });
   let _active = true;
+  function removeFromStack() {
+    const idx = scopeStack.lastIndexOf(scope);
+    if (idx >= 0) scopeStack.splice(idx, 1);
+  }
   const scope = {
     get correlationId() {
       return correlationId;
@@ -131,21 +135,13 @@ function createScope(name, opts, deps) {
       return _active;
     },
     deactivate() {
-      const idx = scopeStack.lastIndexOf(scope);
-      if (idx >= 0) scopeStack.splice(idx, 1);
+      removeFromStack();
     },
     end() {
       if (!_active) return;
       _active = false;
-      deps.pulse(`${name}:teardown`, {
-        ...opts,
-        lane,
-        correlationId,
-        kind: "scope-end",
-        source: "scope"
-      });
-      const idx = scopeStack.lastIndexOf(scope);
-      if (idx >= 0) scopeStack.splice(idx, 1);
+      deps.pulse(`${name}:teardown`, { ...opts, lane, correlationId, kind: "scope-end", source: "scope" });
+      removeFromStack();
     }
   };
   scopeStack.push(scope);
@@ -165,9 +161,6 @@ function now() {
   }
   return Date.now();
 }
-function makeDna(label, lane, ns = "default") {
-  return `pulse://${ns}/${label}/${lane}`;
-}
 function buildEvent(label, opts, correlationId) {
   const lane = opts.lane ?? "ui";
   const event = {
@@ -176,7 +169,6 @@ function buildEvent(label, opts, correlationId) {
     beat: now(),
     ts: Date.now(),
     public: opts.public ?? false,
-    dna: makeDna(label, lane),
     correlationId: correlationId ?? opts.correlationId ?? uid(),
     parentId: opts.parentId,
     meta: opts.meta,
@@ -246,64 +238,6 @@ var tw = {
     registry.clear();
   }
 };
-
-// src/dom.ts
-var ATTR_PULSE = "data-tw-pulse";
-var ATTR_LANE = "data-tw-lane";
-var ATTR_MAX = "data-tw-max";
-var ATTR_PUBLIC = "data-tw-public";
-var ATTR_DOC = "data-tw-doc";
-function pulseElement(el) {
-  const label = el.getAttribute(ATTR_PULSE);
-  if (!label) return;
-  const opts = {
-    lane: el.getAttribute(ATTR_LANE) ?? "ui",
-    public: el.getAttribute(ATTR_PUBLIC) === "true",
-    doc: el.getAttribute(ATTR_DOC) ?? void 0,
-    maxMs: el.hasAttribute(ATTR_MAX) ? parseInt(el.getAttribute(ATTR_MAX), 10) : void 0,
-    meta: { element: el.tagName.toLowerCase(), id: el.id || void 0 }
-  };
-  tw.pulse(label, opts);
-}
-function scanDom(root = document) {
-  if (typeof document === "undefined") return;
-  const els = root.querySelectorAll(`[${ATTR_PULSE}]`);
-  els.forEach(pulseElement);
-}
-function observeDom(root = document) {
-  if (typeof IntersectionObserver === "undefined" || typeof document === "undefined") {
-    scanDom(root);
-    return () => {
-    };
-  }
-  const observer = new IntersectionObserver((entries) => {
-    for (const entry of entries) {
-      if (entry.isIntersecting) {
-        pulseElement(entry.target);
-        observer.unobserve(entry.target);
-      }
-    }
-  }, { threshold: 0.1 });
-  const els = root.querySelectorAll(`[${ATTR_PULSE}]`);
-  els.forEach((el) => observer.observe(el));
-  return () => observer.disconnect();
-}
-function initDomPulse() {
-  if (typeof document === "undefined") return () => {
-  };
-  let cleanup = () => {
-  };
-  if (document.readyState === "loading") {
-    const onReady = () => {
-      cleanup = observeDom(document);
-      document.removeEventListener("DOMContentLoaded", onReady);
-    };
-    document.addEventListener("DOMContentLoaded", onReady);
-  } else {
-    cleanup = observeDom(document);
-  }
-  return cleanup;
-}
 
 // src/instrument.ts
 var PATCHED = /* @__PURE__ */ Symbol.for("tw.patched");
@@ -779,9 +713,8 @@ function detectAfterTeardown(trace) {
   }
   return findings;
 }
-function detectResponseReorder(trace) {
+function detectResponseReorder(sorted) {
   const findings = [];
-  const sorted = [...trace].sort((a, b) => a.beat - b.beat);
   const requests = [];
   const responses = [];
   for (const e of sorted) {
@@ -827,9 +760,8 @@ function detectResponseReorder(trace) {
   }
   return findings;
 }
-function detectDoubleTrigger(trace) {
+function detectDoubleTrigger(sorted) {
   const findings = [];
-  const sorted = [...trace].sort((a, b) => a.beat - b.beat);
   const starts = sorted.filter(isOperationStart);
   const byLabel = /* @__PURE__ */ new Map();
   for (const s of starts) {
@@ -900,9 +832,8 @@ function detectSequenceGap(trace) {
   }
   return findings;
 }
-function detectStaleOverwrite(trace) {
+function detectStaleOverwrite(sorted) {
   const findings = [];
-  const sorted = [...trace].sort((a, b) => a.beat - b.beat);
   const renders = sorted.filter(isRender);
   if (renders.length < 2) return findings;
   const byBase = /* @__PURE__ */ new Map();
@@ -964,12 +895,13 @@ function fingerprint(f) {
 function analyze(trace, opts = {}) {
   const suppress = new Set(opts.suppress ?? []);
   const minSev = opts.minSeverity ?? "info";
+  const sorted = [...trace].sort((a, b) => a.beat - b.beat);
   const detectors = [
     ["after-teardown", () => detectAfterTeardown(trace)],
-    ["response-reorder", () => detectResponseReorder(trace)],
-    ["double-trigger", () => detectDoubleTrigger(trace)],
+    ["response-reorder", () => detectResponseReorder(sorted)],
+    ["double-trigger", () => detectDoubleTrigger(sorted)],
     ["sequence-gap", () => detectSequenceGap(trace)],
-    ["stale-overwrite", () => detectStaleOverwrite(trace)]
+    ["stale-overwrite", () => detectStaleOverwrite(sorted)]
   ];
   const severityOrder = {
     critical: 0,
@@ -1019,20 +951,10 @@ function printFindings(findings) {
 }
 
 // src/reporter.ts
-var FIX_SUGGESTIONS = {
-  "after-teardown": "Add cleanup: clear timers (clearTimeout/clearInterval), abort fetches (AbortController), and unsubscribe listeners in your useEffect return or dispose method. A ref guard (if (!mountedRef.current) return) prevents late setState calls.",
-  "response-reorder": "Cancel stale requests. Use AbortController to abort the pending fetch when a new one starts. Alternatively, stamp each request with an ID and compare it before calling setState \u2014 discard if a newer request already landed.",
-  "double-trigger": "Guard against duplicate triggers. Check a loading/pending flag before starting the operation, or debounce the action. For buttons: disable on click until the operation completes.",
-  "sequence-gap": "Handle reconnection gaps. After a WebSocket reconnect, request a replay of missed sequence numbers or re-fetch the full state. If using polling, verify continuity of the sequence before processing.",
-  "stale-overwrite": "Check data freshness before rendering. Keep track of the most recent request timestamp or sequence number. When a response arrives, compare it to the latest \u2014 discard if older. AbortController also prevents this by canceling the slow request entirely."
-};
 var SEVERITY_ICON = {
   critical: "\u{1F6D1}",
-  // red circle
   warning: "\u26A0\uFE0F",
-  // warning sign
   info: "\u2139\uFE0F"
-  // info
 };
 function formatFinding(entry, log) {
   const f = entry.finding;
@@ -1053,9 +975,8 @@ function formatFinding(entry, log) {
       }
     }
   }
-  const fix = FIX_SUGGESTIONS[f.pattern];
-  if (fix) {
-    log(`   Fix: ${fix}`);
+  if (f.fix) {
+    log(`   Fix: ${f.fix}`);
   }
   log("");
 }
@@ -1382,6 +1303,6 @@ function severityIcon(severity) {
   }
 }
 
-export { VERSION, analyze, createReporter, createTracker, devMode, fingerprint, initDomPulse, instrument, observeDom, printFindings, registry, restore, scanDom, tw };
+export { VERSION, analyze, createReporter, createTracker, devMode, fingerprint, instrument, printFindings, registry, restore, tw };
 //# sourceMappingURL=index.mjs.map
 //# sourceMappingURL=index.mjs.map

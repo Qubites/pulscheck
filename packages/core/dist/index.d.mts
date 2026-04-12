@@ -8,8 +8,6 @@ type PulseSource = "auto" | "manual" | "scope" | (string & {});
 interface PulseOptions {
     lane?: PulseLane;
     public?: boolean;
-    doc?: string;
-    maxMs?: number;
     meta?: Record<string, unknown>;
     /** Correlation ID — links related pulses across lanes. Auto-generated if omitted. */
     correlationId?: string;
@@ -30,9 +28,6 @@ interface PulseEvent {
     beat: number;
     ts: number;
     public: boolean;
-    /** DNA address — unique per label+lane+namespace: "pulse://ns/label/lane" */
-    dna: string;
-    /** Links related pulses across lanes — the core of collision detection */
     correlationId: string;
     /** Parent pulse ID for causal chain tracing */
     parentId?: string;
@@ -120,38 +115,6 @@ declare const tw: {
     readonly clearTrace: () => void;
 };
 type TW = typeof tw;
-
-/**
- * dom.ts — data-tw-pulse DOM attribute scanner
- *
- * Scans the DOM for elements with data-tw-pulse attributes and fires
- * pulse events when they become visible (IntersectionObserver) or
- * on DOMContentLoaded.
- *
- * Usage in JSX/HTML:
- *   <Skeleton data-tw-pulse="hero:loading" data-tw-lane="ui" data-tw-max="600" />
- *   <div data-tw-pulse="cart:visible" data-tw-public="true" />
- */
-/**
- * Scan the document for data-tw-pulse elements and fire pulses.
- * Call once after DOMContentLoaded, or after dynamic content renders.
- */
-declare function scanDom(root?: Element | Document): void;
-/**
- * Observe data-tw-pulse elements and fire when they enter the viewport.
- * Returns a cleanup function.
- */
-declare function observeDom(root?: Element | Document): () => void;
-/**
- * Auto-initialize: scan on DOMContentLoaded and observe all pulse elements.
- * Call this once in your app entry point.
- *
- * @example
- * // In main.tsx / app entry
- * import { initDomPulse } from 'pulscheck'
- * initDomPulse()
- */
-declare function initDomPulse(): () => void;
 
 type PulseHandler = (event: PulseEvent) => void;
 declare class PulseRegistry {
@@ -457,4 +420,4 @@ interface Tracker {
 }
 declare function createTracker(options?: TrackerOptions): Tracker;
 
-export { type AnalyzeOptions, type Baseline, type DevModeOptions, type DiffSummary, type EventInstrumentOptions, type Finding, type FindingPattern, type FindingSeverity, type FindingStatus, type InstrumentOptions, type MeasureResult, type PulseEvent, type PulseKind, type PulseLane, type PulseOptions, type PulseSource, type Reporter, type ReporterOptions, type Scope, type TW, type TrackedFinding, type Tracker, type TrackerOptions, VERSION, analyze, createReporter, createTracker, devMode, fingerprint, initDomPulse, instrument, observeDom, printFindings, registry, restore, scanDom, tw };
+export { type AnalyzeOptions, type Baseline, type DevModeOptions, type DiffSummary, type EventInstrumentOptions, type Finding, type FindingPattern, type FindingSeverity, type FindingStatus, type InstrumentOptions, type MeasureResult, type PulseEvent, type PulseKind, type PulseLane, type PulseOptions, type PulseSource, type Reporter, type ReporterOptions, type Scope, type TW, type TrackedFinding, type Tracker, type TrackerOptions, VERSION, analyze, createReporter, createTracker, devMode, fingerprint, instrument, printFindings, registry, restore, tw };

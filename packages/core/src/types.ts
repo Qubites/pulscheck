@@ -16,8 +16,6 @@ export type PulseSource = "auto" | "manual" | "scope" | (string & {});
 export interface PulseOptions {
   lane?: PulseLane;
   public?: boolean;
-  doc?: string;
-  maxMs?: number;
   meta?: Record<string, unknown>;
   /** Correlation ID — links related pulses across lanes. Auto-generated if omitted. */
   correlationId?: string;
@@ -39,9 +37,6 @@ export interface PulseEvent {
   beat: number;
   ts: number;
   public: boolean;
-  /** DNA address — unique per label+lane+namespace: "pulse://ns/label/lane" */
-  dna: string;
-  /** Links related pulses across lanes — the core of collision detection */
   correlationId: string;
   /** Parent pulse ID for causal chain tracing */
   parentId?: string;

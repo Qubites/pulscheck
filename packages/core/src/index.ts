@@ -5,7 +5,6 @@ export { VERSION } from "./version";
 export { tw } from "./tw";
 export type { TW, MeasureResult } from "./tw";
 export type { PulseEvent, PulseOptions, PulseLane, PulseKind, PulseSource } from "./types";
-export { initDomPulse, scanDom, observeDom } from "./dom";
 export { registry } from "./registry";
 
 // Auto-instrumentation — patches globals to emit pulses at async boundaries

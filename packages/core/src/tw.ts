@@ -1,4 +1,4 @@
-import type { PulseOptions, PulseEvent, PulseLane } from "./types";
+import type { PulseOptions, PulseEvent } from "./types";
 import { registry } from "./registry";
 import { createScope, type Scope } from "./scope";
 
@@ -11,17 +11,11 @@ function now(): number {
   return Date.now();
 }
 
-/** DNA = "pulse://namespace/label/lane" — unique even when same label reused in different lanes */
-function makeDna(label: string, lane: PulseLane, ns = "default"): string {
-  return `pulse://${ns}/${label}/${lane}`;
-}
-
 function buildEvent(label: string, opts: PulseOptions, correlationId?: string): PulseEvent {
   const lane = opts.lane ?? "ui";
   const event: PulseEvent = {
     label, lane, beat: now(), ts: Date.now(),
     public: opts.public ?? false,
-    dna: makeDna(label, lane),
     correlationId: correlationId ?? opts.correlationId ?? uid(),
     parentId: opts.parentId,
     meta: opts.meta,

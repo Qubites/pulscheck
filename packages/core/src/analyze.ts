@@ -208,9 +208,8 @@ function detectAfterTeardown(trace: readonly PulseEvent[]): Finding[] {
 
 // ─── Pattern 2: Response reorder ─────────────────────────────────────
 
-function detectResponseReorder(trace: readonly PulseEvent[]): Finding[] {
+function detectResponseReorder(sorted: readonly PulseEvent[]): Finding[] {
   const findings: Finding[] = [];
-  const sorted = [...trace].sort((a, b) => a.beat - b.beat);
 
   // Find request/response pairs by matching label base
   // e.g., "search:request" and "search:response" share base "search"
@@ -288,9 +287,8 @@ function detectResponseReorder(trace: readonly PulseEvent[]): Finding[] {
 
 // ─── Pattern 3: Double-trigger ───────────────────────────────────────
 
-function detectDoubleTrigger(trace: readonly PulseEvent[]): Finding[] {
+function detectDoubleTrigger(sorted: readonly PulseEvent[]): Finding[] {
   const findings: Finding[] = [];
-  const sorted = [...trace].sort((a, b) => a.beat - b.beat);
 
   // Find operations that start with :start or match request signals
   const starts = sorted.filter(isOperationStart);
@@ -410,9 +408,8 @@ function detectSequenceGap(trace: readonly PulseEvent[]): Finding[] {
 
 // ─── Pattern 5: Stale overwrite ──────────────────────────────────────
 
-function detectStaleOverwrite(trace: readonly PulseEvent[]): Finding[] {
+function detectStaleOverwrite(sorted: readonly PulseEvent[]): Finding[] {
   const findings: Finding[] = [];
-  const sorted = [...trace].sort((a, b) => a.beat - b.beat);
 
   // Find render/update events
   const renders = sorted.filter(isRender);
@@ -526,12 +523,15 @@ export function analyze(
   const suppress = new Set(opts.suppress ?? []);
   const minSev = opts.minSeverity ?? "info";
 
+  // Sort once — 3 detectors need chronological order. Avoids 3 redundant copies.
+  const sorted = [...trace].sort((a, b) => a.beat - b.beat);
+
   const detectors: [FindingPattern, () => Finding[]][] = [
     ["after-teardown", () => detectAfterTeardown(trace)],
-    ["response-reorder", () => detectResponseReorder(trace)],
-    ["double-trigger", () => detectDoubleTrigger(trace)],
+    ["response-reorder", () => detectResponseReorder(sorted)],
+    ["double-trigger", () => detectDoubleTrigger(sorted)],
     ["sequence-gap", () => detectSequenceGap(trace)],
-    ["stale-overwrite", () => detectStaleOverwrite(trace)],
+    ["stale-overwrite", () => detectStaleOverwrite(sorted)],
   ];
 
   const severityOrder: Record<FindingSeverity, number> = {

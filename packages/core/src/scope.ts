@@ -95,35 +95,22 @@ export function createScope(
 
   let _active = true;
 
+  function removeFromStack() {
+    const idx = scopeStack.lastIndexOf(scope);
+    if (idx >= 0) scopeStack.splice(idx, 1);
+  }
+
   const scope: Scope = {
     get correlationId() { return correlationId; },
     get name() { return name; },
     get lane() { return lane; },
     get active() { return _active; },
-    deactivate() {
-      // Remove from scope stack so other components' events don't inherit
-      // this scope. Does NOT emit teardown — the scope is still conceptually
-      // active for after-teardown detection.
-      const idx = scopeStack.lastIndexOf(scope);
-      if (idx >= 0) scopeStack.splice(idx, 1);
-    },
+    deactivate() { removeFromStack(); },
     end() {
-      if (!_active) return; // idempotent
+      if (!_active) return;
       _active = false;
-
-      // Emit teardown event with the scope's correlationId
-      // This is what the after-teardown pattern looks for
-      deps.pulse(`${name}:teardown`, {
-        ...opts,
-        lane,
-        correlationId,
-        kind: "scope-end",
-        source: "scope",
-      });
-
-      // Remove from stack if still there (deactivate() may have already done this)
-      const idx = scopeStack.lastIndexOf(scope);
-      if (idx >= 0) scopeStack.splice(idx, 1);
+      deps.pulse(`${name}:teardown`, { ...opts, lane, correlationId, kind: "scope-end", source: "scope" });
+      removeFromStack();
     },
   };
 

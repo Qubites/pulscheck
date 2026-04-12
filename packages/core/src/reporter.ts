@@ -51,49 +51,12 @@ interface SeenEntry {
   lastBeat: number;
 }
 
-// ─── Fix suggestions per pattern ────────────────────────────────────
-
-const FIX_SUGGESTIONS: Record<string, string> = {
-  "after-teardown":
-    "Add cleanup: clear timers (clearTimeout/clearInterval), abort fetches " +
-    "(AbortController), and unsubscribe listeners in your useEffect return or " +
-    "dispose method. A ref guard (if (!mountedRef.current) return) prevents " +
-    "late setState calls.",
-
-  "response-reorder":
-    "Cancel stale requests. Use AbortController to abort the pending fetch " +
-    "when a new one starts. Alternatively, stamp each request with an ID and " +
-    "compare it before calling setState — discard if a newer request already landed.",
-
-  "double-trigger":
-    "Guard against duplicate triggers. Check a loading/pending flag before " +
-    "starting the operation, or debounce the action. For buttons: disable " +
-    "on click until the operation completes.",
-
-  "sequence-gap":
-    "Handle reconnection gaps. After a WebSocket reconnect, request a replay " +
-    "of missed sequence numbers or re-fetch the full state. If using polling, " +
-    "verify continuity of the sequence before processing.",
-
-  "stale-overwrite":
-    "Check data freshness before rendering. Keep track of the most recent " +
-    "request timestamp or sequence number. When a response arrives, compare " +
-    "it to the latest — discard if older. AbortController also prevents this " +
-    "by canceling the slow request entirely.",
-};
-
 // ─── Console formatting ─────────────────────────────────────────────
 
 const SEVERITY_ICON: Record<FindingSeverity, string> = {
-  critical: "\uD83D\uDED1",  // red circle
-  warning: "\u26A0\uFE0F",   // warning sign
-  info: "\u2139\uFE0F",      // info
-};
-
-const SEVERITY_STYLE: Record<FindingSeverity, string> = {
-  critical: "color: #dc2626; font-weight: bold",
-  warning: "color: #d97706; font-weight: bold",
-  info: "color: #2563eb",
+  critical: "\uD83D\uDED1",
+  warning: "\u26A0\uFE0F",
+  info: "\u2139\uFE0F",
 };
 
 function formatFinding(entry: SeenEntry, log: (msg: string) => void): void {
@@ -122,9 +85,8 @@ function formatFinding(entry: SeenEntry, log: (msg: string) => void): void {
     }
   }
 
-  const fix = FIX_SUGGESTIONS[f.pattern];
-  if (fix) {
-    log(`   Fix: ${fix}`);
+  if (f.fix) {
+    log(`   Fix: ${f.fix}`);
   }
 
   log("");

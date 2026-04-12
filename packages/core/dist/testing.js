@@ -109,6 +109,10 @@ function createScope(name, opts, deps) {
     source: "scope"
   });
   let _active = true;
+  function removeFromStack() {
+    const idx = scopeStack.lastIndexOf(scope);
+    if (idx >= 0) scopeStack.splice(idx, 1);
+  }
   const scope = {
     get correlationId() {
       return correlationId;
@@ -123,21 +127,13 @@ function createScope(name, opts, deps) {
       return _active;
     },
     deactivate() {
-      const idx = scopeStack.lastIndexOf(scope);
-      if (idx >= 0) scopeStack.splice(idx, 1);
+      removeFromStack();
     },
     end() {
       if (!_active) return;
       _active = false;
-      deps.pulse(`${name}:teardown`, {
-        ...opts,
-        lane,
-        correlationId,
-        kind: "scope-end",
-        source: "scope"
-      });
-      const idx = scopeStack.lastIndexOf(scope);
-      if (idx >= 0) scopeStack.splice(idx, 1);
+      deps.pulse(`${name}:teardown`, { ...opts, lane, correlationId, kind: "scope-end", source: "scope" });
+      removeFromStack();
     }
   };
   scopeStack.push(scope);
@@ -157,9 +153,6 @@ function now() {
   }
   return Date.now();
 }
-function makeDna(label, lane, ns = "default") {
-  return `pulse://${ns}/${label}/${lane}`;
-}
 function buildEvent(label, opts, correlationId) {
   const lane = opts.lane ?? "ui";
   const event = {
@@ -168,7 +161,6 @@ function buildEvent(label, opts, correlationId) {
     beat: now(),
     ts: Date.now(),
     public: opts.public ?? false,
-    dna: makeDna(label, lane),
     correlationId: correlationId ?? opts.correlationId ?? uid(),
     parentId: opts.parentId,
     meta: opts.meta,
@@ -711,9 +703,8 @@ function detectAfterTeardown(trace) {
   }
   return findings;
 }
-function detectResponseReorder(trace) {
+function detectResponseReorder(sorted) {
   const findings = [];
-  const sorted = [...trace].sort((a, b) => a.beat - b.beat);
   const requests = [];
   const responses = [];
   for (const e of sorted) {
@@ -759,9 +750,8 @@ function detectResponseReorder(trace) {
   }
   return findings;
 }
-function detectDoubleTrigger(trace) {
+function detectDoubleTrigger(sorted) {
   const findings = [];
-  const sorted = [...trace].sort((a, b) => a.beat - b.beat);
   const starts = sorted.filter(isOperationStart);
   const byLabel = /* @__PURE__ */ new Map();
   for (const s of starts) {
@@ -832,9 +822,8 @@ function detectSequenceGap(trace) {
   }
   return findings;
 }
-function detectStaleOverwrite(trace) {
+function detectStaleOverwrite(sorted) {
   const findings = [];
-  const sorted = [...trace].sort((a, b) => a.beat - b.beat);
   const renders = sorted.filter(isRender);
   if (renders.length < 2) return findings;
   const byBase = /* @__PURE__ */ new Map();
@@ -891,12 +880,13 @@ function metaEqual(a, b) {
 function analyze(trace, opts = {}) {
   const suppress = new Set(opts.suppress ?? []);
   const minSev = opts.minSeverity ?? "info";
+  const sorted = [...trace].sort((a, b) => a.beat - b.beat);
   const detectors = [
     ["after-teardown", () => detectAfterTeardown(trace)],
-    ["response-reorder", () => detectResponseReorder(trace)],
-    ["double-trigger", () => detectDoubleTrigger(trace)],
+    ["response-reorder", () => detectResponseReorder(sorted)],
+    ["double-trigger", () => detectDoubleTrigger(sorted)],
     ["sequence-gap", () => detectSequenceGap(trace)],
-    ["stale-overwrite", () => detectStaleOverwrite(trace)]
+    ["stale-overwrite", () => detectStaleOverwrite(sorted)]
   ];
   const severityOrder = {
     critical: 0,
