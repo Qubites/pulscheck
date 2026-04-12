@@ -1304,5 +1304,3 @@ function severityIcon(severity) {
 }
 
 export { VERSION, analyze, createReporter, createTracker, devMode, fingerprint, instrument, printFindings, registry, restore, tw };
-//# sourceMappingURL=index.mjs.map
-//# sourceMappingURL=index.mjs.map

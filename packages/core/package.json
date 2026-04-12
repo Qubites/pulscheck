@@ -58,6 +58,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.28",
+    "tsup": "^8.0.0",
     "typescript": "^5.9.3"
   }
 }

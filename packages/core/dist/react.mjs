@@ -1133,5 +1133,3 @@ function TwProvider({ children, options }) {
 }
 
 export { TwProvider, usePulse, usePulseMeasure, usePulseMount, usePulseRender, useScopedEffect, useScopedLayoutEffect };
-//# sourceMappingURL=react.mjs.map
-//# sourceMappingURL=react.mjs.map

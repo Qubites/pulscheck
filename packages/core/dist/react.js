@@ -1141,5 +1141,3 @@ exports.usePulseMount = usePulseMount;
 exports.usePulseRender = usePulseRender;
 exports.useScopedEffect = useScopedEffect;
 exports.useScopedLayoutEffect = useScopedLayoutEffect;
-//# sourceMappingURL=react.js.map
-//# sourceMappingURL=react.js.map

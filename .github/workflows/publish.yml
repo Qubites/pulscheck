@@ -6,7 +6,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write  # Required for npm provenance
+  id-token: write # Required for npm provenance
 
 jobs:
   publish:
@@ -20,11 +20,22 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
-        run: npm install --workspaces
-        working-directory: .
+        run: npm install
+        working-directory: packages/core
+
+      - name: Typecheck
+        run: npm run typecheck
+        working-directory: packages/core
 
       - name: Build
         run: npm run build
+        working-directory: packages/core
+
+      - name: Verify dist
+        run: |
+          test -f dist/index.mjs || (echo "Missing dist/index.mjs" && exit 1)
+          test -f dist/cli.js || (echo "Missing dist/cli.js" && exit 1)
+          node -e "require('./dist/index.js')"
         working-directory: packages/core
 
       - name: Publish with provenance

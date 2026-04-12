@@ -1316,5 +1316,3 @@ exports.printFindings = printFindings;
 exports.registry = registry;
 exports.restore = restore;
 exports.tw = tw;
-//# sourceMappingURL=index.js.map
-//# sourceMappingURL=index.js.map

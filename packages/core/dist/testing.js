@@ -1024,5 +1024,3 @@ function assertClean(result) {
 
 exports.assertClean = assertClean;
 exports.withPulsCheck = withPulsCheck;
-//# sourceMappingURL=testing.js.map
-//# sourceMappingURL=testing.js.map
