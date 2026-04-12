@@ -1,0 +1,25 @@
+# .github/workflows/pulscheck.yml
+# Add this to your repo to scan every PR for race conditions.
+
+name: PulsCheck
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write  # Required for SARIF upload
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Qubites/temporal-watcher/action@main
+        with:
+          path: src              # Directory to scan
+          severity: warning      # Minimum severity to report
+          fail-on: critical      # Fail CI on critical findings (or: warning, info, none)

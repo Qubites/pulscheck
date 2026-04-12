@@ -1,0 +1,96 @@
+name: 'PulsCheck — Race Condition Scanner'
+description: 'Scan your codebase for async race condition patterns. Posts findings as PR annotations.'
+author: 'Oliver Nordsve'
+
+branding:
+  icon: 'zap'
+  color: 'red'
+
+inputs:
+  path:
+    description: 'Directory to scan (default: src)'
+    required: false
+    default: 'src'
+  severity:
+    description: 'Minimum severity to report: info, warning, critical (default: warning)'
+    required: false
+    default: 'warning'
+  fail-on:
+    description: 'Fail the check if findings at this severity: info, warning, critical, none (default: none)'
+    required: false
+    default: 'none'
+  format:
+    description: 'Output format: text, json, sarif (default: text)'
+    required: false
+    default: 'text'
+
+outputs:
+  total:
+    description: 'Total number of findings'
+  critical:
+    description: 'Number of critical findings'
+  warning:
+    description: 'Number of warning findings'
+  sarif-file:
+    description: 'Path to SARIF output file (if format is sarif)'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install PulsCheck
+      shell: bash
+      run: npm install --no-save pulscheck@latest 2>/dev/null || npx pulscheck --version
+
+    - name: Run PulsCheck scan
+      id: scan
+      shell: bash
+      run: |
+        ARGS="ci ${{ inputs.path }} --severity ${{ inputs.severity }}"
+
+        if [ "${{ inputs.fail-on }}" != "none" ]; then
+          ARGS="$ARGS --fail-on ${{ inputs.fail-on }}"
+        fi
+
+        # Generate SARIF for GitHub code scanning
+        npx pulscheck $ARGS --format sarif --out pulscheck-results.sarif --quiet 2>/dev/null || true
+
+        # Also generate text for the summary
+        OUTPUT=$(npx pulscheck scan ${{ inputs.path }} --severity ${{ inputs.severity }} --quiet 2>/dev/null || true)
+
+        # Parse counts from JSON
+        JSON=$(npx pulscheck scan ${{ inputs.path }} --severity ${{ inputs.severity }} --format json --quiet 2>/dev/null || echo '{"summary":{"total":0,"critical":0,"warning":0}}')
+        TOTAL=$(echo "$JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['summary']['total'])" 2>/dev/null || echo "0")
+        CRITICAL=$(echo "$JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['summary']['critical'])" 2>/dev/null || echo "0")
+        WARNING=$(echo "$JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['summary']['warning'])" 2>/dev/null || echo "0")
+
+        echo "total=$TOTAL" >> $GITHUB_OUTPUT
+        echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+        echo "warning=$WARNING" >> $GITHUB_OUTPUT
+        echo "sarif-file=pulscheck-results.sarif" >> $GITHUB_OUTPUT
+
+        # Write summary
+        echo "### PulsCheck Scan Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        if [ "$TOTAL" = "0" ]; then
+          echo "No race condition patterns found." >> $GITHUB_STEP_SUMMARY
+        else
+          echo "Found **$TOTAL** patterns ($CRITICAL critical, $WARNING warning)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$OUTPUT" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Upload SARIF (if available)
+      if: always() && hashFiles('pulscheck-results.sarif') != ''
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: pulscheck-results.sarif
+        category: pulscheck
+      continue-on-error: true
+
+    - name: Fail on threshold
+      if: inputs.fail-on != 'none'
+      shell: bash
+      run: |
+        npx pulscheck ci ${{ inputs.path }} --severity ${{ inputs.severity }} --fail-on ${{ inputs.fail-on }} --quiet

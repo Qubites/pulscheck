@@ -1,0 +1,63 @@
+{
+  "name": "pulscheck",
+  "version": "0.1.0",
+  "description": "Runtime race condition detection for frontend apps. One line of code, five bug patterns, zero config.",
+  "keywords": [
+    "race-condition",
+    "async",
+    "debugging",
+    "react",
+    "frontend",
+    "tracing",
+    "pulse"
+  ],
+  "author": "Oliver Nordsve",
+  "license": "Apache-2.0",
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.mjs",
+      "require": "./dist/react.cjs"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.mjs",
+      "require": "./dist/testing.cjs"
+    }
+  },
+  "bin": {
+    "pulscheck": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run typecheck && npm run build"
+  },
+  "peerDependencies": {
+    "react": ">=17.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.28",
+    "typescript": "^5.9.3"
+  }
+}

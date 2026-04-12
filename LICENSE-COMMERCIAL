@@ -1,0 +1,22 @@
+PulsCheck — Future Commercial Components
+=========================================
+
+Copyright (c) 2026 Oliver Nordsve / Qubites
+
+Everything in this repository is Apache 2.0 — free for any use.
+
+This file is a placeholder. If PulsCheck proves genuinely useful in
+real-world projects — not just in our own tests — we may build additional
+components (Playwright plugin, dashboard) under a separate license.
+
+That hasn't happened yet. Right now we're validating whether this tool
+saves real time and catches real bugs that would otherwise ship.
+
+If you're using PulsCheck and have feedback (good, bad, false positives,
+missed bugs, pain points), we want to hear it:
+
+  oliver@qubites.com
+  https://github.com/Qubites/pulscheck/issues
+
+The core runtime detector, CLI scanner, React hooks, GitHub Action,
+and all source code in this repo are and will remain Apache 2.0.
