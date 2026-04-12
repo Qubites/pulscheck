@@ -30,7 +30,7 @@ class PulseRegistry {
     this._buf[this._head] = event;
     this._head = (this._head + 1) % this._cap;
     if (this._count < this._cap) this._count++;
-    for (const h of this.handlers) { try { h(event); } catch (_) {} }
+    for (const h of this.handlers) { try { h(event); } catch (e) { if (isDev()) console.warn("[pulscheck] handler error:", e); } }
     if (typeof window !== "undefined") {
       let arr: unknown[] = (window as any).__tw_pulses__ ?? [];
       arr.push({ label: event.label, ts: event.beat, lane: event.lane, correlationId: event.correlationId, meta: event.meta });

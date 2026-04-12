@@ -24,11 +24,11 @@ export { createReporter } from "./reporter";
 export type { Reporter, ReporterOptions } from "./reporter";
 
 // Auto-detector — feed it a trace, it tells you what's wrong
-export { analyze, printFindings } from "./analyze";
+export { analyze, printFindings, fingerprint } from "./analyze";
 export type { Finding, FindingSeverity, FindingPattern, AnalyzeOptions } from "./analyze";
 
 // Persistent finding tracker — lifecycle across runs
-export { createTracker, fingerprint } from "./tracker";
+export { createTracker } from "./tracker";
 export type {
   Tracker,
   TrackerOptions,

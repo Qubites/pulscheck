@@ -53,7 +53,8 @@ var PulseRegistry = class {
     for (const h of this.handlers) {
       try {
         h(event);
-      } catch (_) {
+      } catch (e) {
+        if (isDev()) console.warn("[pulscheck] handler error:", e);
       }
     }
     if (typeof window !== "undefined") {
@@ -190,7 +191,7 @@ function buildEvent(label, opts, correlationId) {
 var tw = {
   pulse(label, opts = {}) {
     if (opts.sample !== void 0 && Math.random() > opts.sample) {
-      return buildEvent(label, opts);
+      return { label, lane: opts.lane ?? "ui", beat: 0, ts: 0, public: false, dna: "", correlationId: opts.correlationId ?? uid(), source: opts.source ?? "manual" };
     }
     const event = buildEvent(label, opts);
     registry.emit(event);
@@ -399,103 +400,57 @@ function patchFetch() {
   });
 }
 function patchTimers() {
-  patchSetTimeout();
-  patchSetInterval();
-  patchClearTimeout();
-  patchClearInterval();
+  patchTimerSet("setTimeout", "delay", "timer-end", "setTimeout:fire", true, activeTimeouts);
+  patchTimerSet("setInterval", "interval", "timer-tick", "setInterval:tick", false, activeIntervals);
+  patchTimerClear("clearTimeout", "setTimeout", activeTimeouts);
+  patchTimerClear("clearInterval", "setInterval", activeIntervals);
 }
-function patchSetTimeout() {
-  const original = globalThis.setTimeout;
+function patchTimerSet(name, metaKey, fireKind, fireLabel, removeOnFire, activeMap) {
+  const original = globalThis[name];
   if (isPatched(original)) return;
-  const patched = function patchedSetTimeout(handler, timeout, ...args) {
-    if (typeof handler !== "function") {
-      return original(handler, timeout);
-    }
+  const patched = function(handler, timeout, ...args) {
+    if (typeof handler !== "function") return original(handler, timeout);
     const scope = currentScope();
     const callSite = captureCallSite();
-    const correlationId = tw.pulse("setTimeout:start", {
+    const correlationId = tw.pulse(`${name}:start`, {
       lane: "ui",
       kind: "timer-start",
       source: "auto",
       parentId: scope?.correlationId,
-      meta: { delay: timeout ?? 0 },
+      meta: { [metaKey]: timeout ?? 0 },
       callSite
     }).correlationId;
-    const id = original(
-      () => {
-        activeTimeouts.delete(id);
-        tw.pulse("setTimeout:fire", {
-          lane: "ui",
-          kind: "timer-end",
-          source: "auto",
-          correlationId,
-          parentId: scope?.correlationId,
-          meta: { delay: timeout ?? 0 }
-        });
-        handler(...args);
-      },
-      timeout
-    );
-    activeTimeouts.set(id, { correlationId, parentId: scope?.correlationId });
+    const id = original(() => {
+      if (removeOnFire) activeMap.delete(id);
+      tw.pulse(fireLabel, {
+        lane: "ui",
+        kind: fireKind,
+        source: "auto",
+        correlationId,
+        parentId: scope?.correlationId,
+        meta: { [metaKey]: timeout ?? 0 }
+      });
+      handler(...args);
+    }, timeout);
+    activeMap.set(id, { correlationId, parentId: scope?.correlationId });
     return id;
   };
   markPatched(patched);
-  globalThis.setTimeout = patched;
+  globalThis[name] = patched;
   cleanups.push(() => {
-    globalThis.setTimeout = original;
-    activeTimeouts.clear();
+    globalThis[name] = original;
+    activeMap.clear();
   });
 }
-function patchSetInterval() {
-  const original = globalThis.setInterval;
+function patchTimerClear(name, setName, activeMap) {
+  const original = globalThis[name];
   if (isPatched(original)) return;
-  const patched = function patchedSetInterval(handler, timeout, ...args) {
-    if (typeof handler !== "function") {
-      return original(handler, timeout);
-    }
-    const scope = currentScope();
-    const callSite = captureCallSite();
-    const correlationId = tw.pulse("setInterval:start", {
-      lane: "ui",
-      kind: "timer-start",
-      source: "auto",
-      parentId: scope?.correlationId,
-      meta: { interval: timeout ?? 0 },
-      callSite
-    }).correlationId;
-    const id = original(
-      () => {
-        tw.pulse("setInterval:tick", {
-          lane: "ui",
-          kind: "timer-tick",
-          source: "auto",
-          correlationId,
-          parentId: scope?.correlationId,
-          meta: { interval: timeout ?? 0 }
-        });
-        handler(...args);
-      },
-      timeout
-    );
-    activeIntervals.set(id, { correlationId, parentId: scope?.correlationId });
-    return id;
-  };
-  markPatched(patched);
-  globalThis.setInterval = patched;
-  cleanups.push(() => {
-    globalThis.setInterval = original;
-    activeIntervals.clear();
-  });
-}
-function patchClearTimeout() {
-  const original = globalThis.clearTimeout;
-  if (isPatched(original)) return;
-  const patched = function patchedClearTimeout(id) {
+  const patched = function(id) {
     if (id != null) {
-      const entry = activeTimeouts.get(id);
+      const entry = activeMap.get(id);
       if (entry) {
-        activeTimeouts.delete(id);
-        tw.pulse("setTimeout:clear", {
+        activeMap.delete(id);
+        tw.pulse(`${setName}:clear`, {
           lane: "ui",
           kind: "timer-clear",
           source: "auto",
@@ -507,34 +462,9 @@ function patchClearTimeout() {
     return original(id);
   };
   markPatched(patched);
-  globalThis.clearTimeout = patched;
+  globalThis[name] = patched;
   cleanups.push(() => {
-    globalThis.clearTimeout = original;
-  });
-}
-function patchClearInterval() {
-  const original = globalThis.clearInterval;
-  if (isPatched(original)) return;
-  const patched = function patchedClearInterval(id) {
-    if (id != null) {
-      const entry = activeIntervals.get(id);
-      if (entry) {
-        activeIntervals.delete(id);
-        tw.pulse("setInterval:clear", {
-          lane: "ui",
-          kind: "timer-clear",
-          source: "auto",
-          correlationId: entry.correlationId,
-          parentId: entry.parentId
-        });
-      }
-    }
-    return original(id);
-  };
-  markPatched(patched);
-  globalThis.clearInterval = patched;
-  cleanups.push(() => {
-    globalThis.clearInterval = original;
+    globalThis[name] = original;
   });
 }
 function patchEvents(opts) {
@@ -1028,6 +958,11 @@ function metaEqual(a, b) {
   if (keysA.length !== keysB.length) return false;
   return keysA.every((k) => a[k] === b[k]);
 }
+function fingerprint(f) {
+  const labels = f.events.map((e) => e.label).sort().join(",");
+  const site = f.events.find((e) => e.callSite)?.callSite;
+  return site ? `${f.pattern}::${labels}::${site}` : `${f.pattern}::${labels}`;
+}
 function analyze(trace, opts = {}) {
   const suppress = new Set(opts.suppress ?? []);
   const minSev = opts.minSeverity ?? "info";
@@ -1093,11 +1028,6 @@ var FIX_SUGGESTIONS = {
   "sequence-gap": "Handle reconnection gaps. After a WebSocket reconnect, request a replay of missed sequence numbers or re-fetch the full state. If using polling, verify continuity of the sequence before processing.",
   "stale-overwrite": "Check data freshness before rendering. Keep track of the most recent request timestamp or sequence number. When a response arrives, compare it to the latest \u2014 discard if older. AbortController also prevents this by canceling the slow request entirely."
 };
-function fingerprint(f) {
-  const labels = f.events.map((e) => e.label).sort().join(",");
-  const site = f.events.find((e) => e.callSite)?.callSite ?? "";
-  return `${f.pattern}::${labels}::${site}`;
-}
 var SEVERITY_ICON = {
   critical: "\u{1F6D1}",
   // red circle
@@ -1168,8 +1098,7 @@ function createReporter(options = {}) {
       }
     }
     if (newFindings === 0) return;
-    const newEntries = [...seen.values()].filter((e) => e.count === 1 || newFindings > 0);
-    const toPrint = newEntries.filter((e) => e.count === 1);
+    const toPrint = [...seen.values()].filter((e) => e.count === 1);
     if (toPrint.length === 0) return;
     log(`
 [pulscheck] ${toPrint.length} new finding(s):
@@ -1225,10 +1154,6 @@ function devMode(options = {}) {
 }
 
 // src/tracker.ts
-function fingerprint2(f) {
-  const labels = f.events.map((e) => e.label).sort().join(",");
-  return `${f.pattern}::${labels}`;
-}
 function defaultReadFile(path) {
   try {
     const fs = __require("fs");
@@ -1283,7 +1208,7 @@ function createTracker(options = {}) {
     const currentFingerprints = /* @__PURE__ */ new Set();
     const ts = now2();
     for (const f of findings) {
-      const fp = fingerprint2(f);
+      const fp = fingerprint(f);
       currentFingerprints.add(fp);
       const existing = state.findings[fp];
       if (!existing) {
@@ -1464,7 +1389,7 @@ exports.analyze = analyze;
 exports.createReporter = createReporter;
 exports.createTracker = createTracker;
 exports.devMode = devMode;
-exports.fingerprint = fingerprint2;
+exports.fingerprint = fingerprint;
 exports.initDomPulse = initDomPulse;
 exports.instrument = instrument;
 exports.observeDom = observeDom;

@@ -260,6 +260,7 @@ interface Finding {
     /** Beat range where the issue occurs */
     beatRange: [number, number];
 }
+declare function fingerprint(f: Finding): string;
 interface AnalyzeOptions {
     /** Suppress specific patterns entirely */
     suppress?: FindingPattern[];
@@ -454,7 +455,6 @@ interface Tracker {
     /** Print a human-readable diff summary. */
     printDiff(diff: DiffSummary, log?: (msg: string) => void): void;
 }
-declare function fingerprint(f: Finding): string;
 declare function createTracker(options?: TrackerOptions): Tracker;
 
 export { type AnalyzeOptions, type Baseline, type DevModeOptions, type DiffSummary, type EventInstrumentOptions, type Finding, type FindingPattern, type FindingSeverity, type FindingStatus, type InstrumentOptions, type MeasureResult, type PulseEvent, type PulseKind, type PulseLane, type PulseOptions, type PulseSource, type Reporter, type ReporterOptions, type Scope, type TW, type TrackedFinding, type Tracker, type TrackerOptions, VERSION, analyze, createReporter, createTracker, devMode, fingerprint, initDomPulse, instrument, observeDom, printFindings, registry, restore, scanDom, tw };

@@ -167,136 +167,70 @@ function patchFetch(): void {
 // ─── Timer patches ──────────────────────────────────────────────────
 
 function patchTimers(): void {
-  patchSetTimeout();
-  patchSetInterval();
-  patchClearTimeout();
-  patchClearInterval();
+  patchTimerSet("setTimeout", "delay", "timer-end", "setTimeout:fire", true, activeTimeouts);
+  patchTimerSet("setInterval", "interval", "timer-tick", "setInterval:tick", false, activeIntervals);
+  patchTimerClear("clearTimeout", "setTimeout", activeTimeouts);
+  patchTimerClear("clearInterval", "setInterval", activeIntervals);
 }
 
-function patchSetTimeout(): void {
-  const original = globalThis.setTimeout;
+function patchTimerSet(
+  name: "setTimeout" | "setInterval",
+  metaKey: string,
+  fireKind: string,
+  fireLabel: string,
+  removeOnFire: boolean,
+  activeMap: Map<ReturnType<typeof setTimeout>, TimerEntry>,
+): void {
+  const original = globalThis[name];
   if (isPatched(original)) return;
 
-  const patched = function patchedSetTimeout(
-    handler: TimerHandler,
-    timeout?: number,
-    ...args: unknown[]
-  ) {
-    if (typeof handler !== "function") {
-      return original(handler as string, timeout);
-    }
+  const patched = function (handler: TimerHandler, timeout?: number, ...args: unknown[]) {
+    if (typeof handler !== "function") return original(handler as string, timeout);
 
     const scope = currentScope();
     const callSite = captureCallSite();
-    const correlationId = tw.pulse("setTimeout:start", {
-      lane: "ui",
-      kind: "timer-start",
-      source: "auto",
+    const correlationId = tw.pulse(`${name}:start`, {
+      lane: "ui", kind: "timer-start", source: "auto",
       parentId: scope?.correlationId,
-      meta: { delay: timeout ?? 0 },
+      meta: { [metaKey]: timeout ?? 0 },
       callSite,
     }).correlationId;
 
-    const id = original(
-      () => {
-        activeTimeouts.delete(id);
-        tw.pulse("setTimeout:fire", {
-          lane: "ui",
-          kind: "timer-end",
-          source: "auto",
-          correlationId,
-          parentId: scope?.correlationId,
-          meta: { delay: timeout ?? 0 },
-        });
-        (handler as Function)(...args);
-      },
-      timeout,
-    );
+    const id = original(() => {
+      if (removeOnFire) activeMap.delete(id);
+      tw.pulse(fireLabel, {
+        lane: "ui", kind: fireKind as any, source: "auto",
+        correlationId, parentId: scope?.correlationId,
+        meta: { [metaKey]: timeout ?? 0 },
+      });
+      (handler as Function)(...args);
+    }, timeout);
 
-    activeTimeouts.set(id, { correlationId, parentId: scope?.correlationId });
+    activeMap.set(id, { correlationId, parentId: scope?.correlationId });
     return id;
   };
 
   markPatched(patched);
-  globalThis.setTimeout = patched as unknown as typeof setTimeout;
-
-  cleanups.push(() => {
-    globalThis.setTimeout = original;
-    activeTimeouts.clear();
-  });
+  (globalThis as any)[name] = patched;
+  cleanups.push(() => { (globalThis as any)[name] = original; activeMap.clear(); });
 }
 
-function patchSetInterval(): void {
-  const original = globalThis.setInterval;
+function patchTimerClear(
+  name: "clearTimeout" | "clearInterval",
+  setName: "setTimeout" | "setInterval",
+  activeMap: Map<ReturnType<typeof setTimeout>, TimerEntry>,
+): void {
+  const original = globalThis[name];
   if (isPatched(original)) return;
 
-  const patched = function patchedSetInterval(
-    handler: TimerHandler,
-    timeout?: number,
-    ...args: unknown[]
-  ) {
-    if (typeof handler !== "function") {
-      return original(handler as string, timeout);
-    }
-
-    const scope = currentScope();
-    const callSite = captureCallSite();
-    const correlationId = tw.pulse("setInterval:start", {
-      lane: "ui",
-      kind: "timer-start",
-      source: "auto",
-      parentId: scope?.correlationId,
-      meta: { interval: timeout ?? 0 },
-      callSite,
-    }).correlationId;
-
-    const id = original(
-      () => {
-        tw.pulse("setInterval:tick", {
-          lane: "ui",
-          kind: "timer-tick",
-          source: "auto",
-          correlationId,
-          parentId: scope?.correlationId,
-          meta: { interval: timeout ?? 0 },
-        });
-        (handler as Function)(...args);
-      },
-      timeout,
-    );
-
-    activeIntervals.set(id, { correlationId, parentId: scope?.correlationId });
-    return id;
-  };
-
-  markPatched(patched);
-  globalThis.setInterval = patched as unknown as typeof setInterval;
-
-  cleanups.push(() => {
-    globalThis.setInterval = original;
-    activeIntervals.clear();
-  });
-}
-
-// ─── Timer clear patches ───────────────────────────────────────────
-
-function patchClearTimeout(): void {
-  const original = globalThis.clearTimeout;
-  if (isPatched(original)) return;
-
-  const patched = function patchedClearTimeout(
-    id?: ReturnType<typeof setTimeout>,
-  ) {
+  const patched = function (id?: ReturnType<typeof setTimeout>) {
     if (id != null) {
-      const entry = activeTimeouts.get(id);
+      const entry = activeMap.get(id);
       if (entry) {
-        activeTimeouts.delete(id);
-        tw.pulse("setTimeout:clear", {
-          lane: "ui",
-          kind: "timer-clear",
-          source: "auto",
-          correlationId: entry.correlationId,
-          parentId: entry.parentId,
+        activeMap.delete(id);
+        tw.pulse(`${setName}:clear`, {
+          lane: "ui", kind: "timer-clear", source: "auto",
+          correlationId: entry.correlationId, parentId: entry.parentId,
         });
       }
     }
@@ -304,42 +238,8 @@ function patchClearTimeout(): void {
   };
 
   markPatched(patched);
-  globalThis.clearTimeout = patched as unknown as typeof clearTimeout;
-
-  cleanups.push(() => {
-    globalThis.clearTimeout = original;
-  });
-}
-
-function patchClearInterval(): void {
-  const original = globalThis.clearInterval;
-  if (isPatched(original)) return;
-
-  const patched = function patchedClearInterval(
-    id?: ReturnType<typeof setInterval>,
-  ) {
-    if (id != null) {
-      const entry = activeIntervals.get(id);
-      if (entry) {
-        activeIntervals.delete(id);
-        tw.pulse("setInterval:clear", {
-          lane: "ui",
-          kind: "timer-clear",
-          source: "auto",
-          correlationId: entry.correlationId,
-          parentId: entry.parentId,
-        });
-      }
-    }
-    return original(id);
-  };
-
-  markPatched(patched);
-  globalThis.clearInterval = patched as unknown as typeof clearInterval;
-
-  cleanups.push(() => {
-    globalThis.clearInterval = original;
-  });
+  (globalThis as any)[name] = patched;
+  cleanups.push(() => { (globalThis as any)[name] = original; });
 }
 
 // ─── Event listener patch ───────────────────────────────────────────

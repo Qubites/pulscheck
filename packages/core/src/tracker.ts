@@ -15,6 +15,8 @@
  *   tracker.save()                    // persist updated baseline
  */
 
+import { fingerprint } from "./analyze";
+export { fingerprint };
 import type { Finding, FindingPattern, FindingSeverity } from "./analyze";
 
 // ─── Types ──────────────────────────────────────────────────────────
@@ -120,13 +122,6 @@ export interface Tracker {
   get(fingerprint: string): TrackedFinding | undefined;
   /** Print a human-readable diff summary. */
   printDiff(diff: DiffSummary, log?: (msg: string) => void): void;
-}
-
-// ─── Fingerprinting (matches reporter.ts) ───────────────────────────
-
-export function fingerprint(f: Finding): string {
-  const labels = f.events.map((e) => e.label).sort().join(",");
-  return `${f.pattern}::${labels}`;
 }
 
 // ─── Default I/O (Node.js) ──────────────────────────────────────────

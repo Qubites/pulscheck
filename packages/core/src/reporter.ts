@@ -14,7 +14,7 @@
  */
 
 import { registry } from "./registry";
-import { analyze } from "./analyze";
+import { analyze, fingerprint } from "./analyze";
 import { _nativeSetInterval, _nativeClearInterval } from "./instrument";
 import type { Finding, FindingSeverity, AnalyzeOptions } from "./analyze";
 
@@ -81,17 +81,6 @@ const FIX_SUGGESTIONS: Record<string, string> = {
     "it to the latest — discard if older. AbortController also prevents this " +
     "by canceling the slow request entirely.",
 };
-
-// ─── Fingerprinting ─────────────────────────────────────────────────
-// Structural fingerprint: same pattern + same labels = same bug,
-// regardless of correlationId (which changes every occurrence).
-
-function fingerprint(f: Finding): string {
-  const labels = f.events.map((e) => e.label).sort().join(",");
-  // Include first callSite to distinguish same-label bugs from different components
-  const site = f.events.find((e) => e.callSite)?.callSite ?? "";
-  return `${f.pattern}::${labels}::${site}`;
-}
 
 // ─── Console formatting ─────────────────────────────────────────────
 
@@ -192,8 +181,7 @@ export function createReporter(options: ReporterOptions = {}): Reporter {
     if (newFindings === 0) return;
 
     // Only print newly discovered findings
-    const newEntries = [...seen.values()].filter((e) => e.count === 1 || newFindings > 0);
-    const toPrint = newEntries.filter((e) => e.count === 1);
+    const toPrint = [...seen.values()].filter((e) => e.count === 1);
 
     if (toPrint.length === 0) return;
 

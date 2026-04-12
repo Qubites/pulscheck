@@ -40,7 +40,8 @@ export interface MeasureResult {
 export const tw = {
   pulse(label: string, opts: PulseOptions = {}): PulseEvent {
     if (opts.sample !== undefined && Math.random() > opts.sample) {
-      return buildEvent(label, opts); // build but do NOT emit
+      // Sampled out — return minimal stub (callers only need correlationId)
+      return { label, lane: opts.lane ?? "ui", beat: 0, ts: 0, public: false, dna: "", correlationId: opts.correlationId ?? uid(), source: opts.source ?? "manual" } as PulseEvent;
     }
     const event = buildEvent(label, opts);
     registry.emit(event);

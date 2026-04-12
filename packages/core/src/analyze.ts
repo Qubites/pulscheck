@@ -495,6 +495,15 @@ function metaEqual(
   return keysA.every((k) => a[k] === b[k]);
 }
 
+// ─── Fingerprinting ─────────────────────────────────────────────────
+// Single source of truth. Used by reporter (session dedup) and tracker (persistence).
+
+export function fingerprint(f: Finding): string {
+  const labels = f.events.map((e) => e.label).sort().join(",");
+  const site = f.events.find((e) => e.callSite)?.callSite;
+  return site ? `${f.pattern}::${labels}::${site}` : `${f.pattern}::${labels}`;
+}
+
 // ─── Main API ────────────────────────────────────────────────────────
 
 export interface AnalyzeOptions {
