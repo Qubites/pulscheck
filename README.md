@@ -2,10 +2,6 @@
 
 Runtime race condition detection for frontend apps. One function call, five bug patterns, zero config.
 
-> **Early release.** 80% detection on external test scenarios, zero false positives in controlled tests. Real-world validation in progress. All feedback appreciated — [issues](https://github.com/Qubites/pulscheck/issues) · [discussions](https://github.com/Qubites/pulscheck/discussions)
->
-> **[Try the online scanner](https://pulscheck.dev)** — paste a React component, see what PulsCheck finds. No install needed.
-
 ```
 npm install pulscheck
 ```
@@ -181,23 +177,8 @@ If your whole app uses React Query correctly, you probably don't need PulsCheck.
 - How it behaves with React Query, SWR, or other request management libraries
 - Whether the CLI scanner is useful in CI or just annoying after the first run
 
-If you can help answer any of these, we'd genuinely appreciate an [issue](https://github.com/Qubites/pulscheck/issues) or [discussion](https://github.com/Qubites/pulscheck/discussions).
-
-## Security & Trust
-
-PulsCheck patches `fetch` and `setTimeout` — we know that looks like what malicious packages do. Here's why you can trust it:
-
-- **Full source on GitHub** — every line is readable, no obfuscation
-- **~50KB total** — nothing hidden in the bundle size
-- **No install scripts** — `npm install` doesn't execute any code
-- **No network calls** — PulsCheck never sends data anywhere, all analysis is local
-- **Dev-only** — tree-shaken out of production builds
-- **npm provenance** — cryptographically verified build from this exact repo *(coming soon)*
-
-Run `npx pulscheck scan node_modules/pulscheck/dist/` on itself if you want to verify.
-
 ## License
 
-Apache 2.0 — free for all use, commercial and open source. See [LICENSE](LICENSE).
+Apache 2.0. See [LICENSE](LICENSE).
 
-Read the [research paper](PAPER.md) for full technical details and honest evaluation.
+[Research paper](PAPER.md) with full methodology and evaluation.
