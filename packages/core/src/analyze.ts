@@ -3,12 +3,13 @@
  *
  * Feed it a trace, it tells you what's wrong. No configuration needed.
  *
- * Detects 5 patterns:
+ * Detects 6 patterns:
  *   1. after-teardown   — event fires after a known cleanup/dispose/unmount
  *   2. response-reorder — responses arrive in different order than requests
  *   3. double-trigger   — same operation starts twice concurrently
  *   4. sequence-gap     — numbered sequences with missing entries
  *   5. stale-overwrite  — older operation's result overwrites newer one
+ *   6. dangling-async   — operation started but never completed before scope teardown
  *
  * @example
  *   import { tw, analyze } from 'pulscheck'
@@ -27,7 +28,8 @@ export type FindingPattern =
   | "response-reorder"
   | "double-trigger"
   | "sequence-gap"
-  | "stale-overwrite";
+  | "stale-overwrite"
+  | "dangling-async";
 
 export interface Finding {
   pattern: FindingPattern;
@@ -492,6 +494,128 @@ function metaEqual(
   return keysA.every((k) => a[k] === b[k]);
 }
 
+// ─── Pattern 6: Dangling async ──────────────────────────────────────
+// Detects async operations (fetch, timers, WebSocket) that started
+// within a scope but never completed before the scope tore down.
+// This catches the exact gap where test frameworks declare "passed"
+// before dangling promises resolve.
+//
+// Only flags operations with a parentId linking to a torn-down scope —
+// fire-and-forget operations without scope context are intentional.
+
+/**
+ * Per-operation-type completion check.
+ * - fetch: needs response or error
+ * - setTimeout: needs fire (timer-end) or clear
+ * - setInterval: needs clear ONLY (ticks are ongoing, not completion)
+ * - WebSocket: needs response (connected), close, or error
+ * - generic: any end-like kind
+ */
+function isDanglingResolved(
+  start: PulseEvent,
+  completionKinds: Map<string, Set<string>>,
+): boolean {
+  const kinds = completionKinds.get(start.correlationId);
+  if (!kinds) return false;
+
+  // Fetch
+  if (start.kind === "request" && start.label.startsWith("fetch:")) {
+    return kinds.has("response") || kinds.has("error");
+  }
+
+  // WebSocket handshake
+  if (start.kind === "request" && start.label.startsWith("ws:")) {
+    return kinds.has("response") || kinds.has("error") || kinds.has("close");
+  }
+
+  // setInterval — only clear counts (ticks mean it's still running = still leaking)
+  if (start.kind === "timer-start" && start.label.includes("setInterval")) {
+    return kinds.has("timer-clear");
+  }
+
+  // setTimeout — fire or clear
+  if (start.kind === "timer-start") {
+    return kinds.has("timer-end") || kinds.has("timer-clear");
+  }
+
+  // Generic manual start
+  return kinds.has("response") || kinds.has("error")
+    || kinds.has("timer-end") || kinds.has("timer-clear") || kinds.has("close");
+}
+
+function detectDanglingAsync(trace: readonly PulseEvent[]): Finding[] {
+  const findings: Finding[] = [];
+
+  // 1. Find all scopes that tore down, record their teardown beat
+  const scopeTeardown = new Map<string, number>();
+  for (const e of trace) {
+    if (isTeardown(e)) {
+      scopeTeardown.set(e.correlationId, e.beat);
+    }
+  }
+
+  if (scopeTeardown.size === 0) return findings;
+
+  // 2. Index completion-like event kinds by correlationId (O(n) build, O(1) lookup)
+  const completionKinds = new Map<string, Set<string>>();
+  for (const e of trace) {
+    if (!e.kind) continue;
+    let kinds = completionKinds.get(e.correlationId);
+    if (!kinds) {
+      kinds = new Set();
+      completionKinds.set(e.correlationId, kinds);
+    }
+    kinds.add(e.kind);
+  }
+
+  // 3. Find start events whose parent scope tore down and that have no completion
+  for (const e of trace) {
+    if (!isOperationStart(e)) continue;
+    if (!e.parentId) continue;
+
+    const teardownAt = scopeTeardown.get(e.parentId);
+    if (teardownAt === undefined) continue;
+
+    // Only flag operations that started BEFORE teardown.
+    // Operations starting AFTER teardown are caught by the after-teardown detector.
+    if (e.beat >= teardownAt) continue;
+
+    // Has a proper completion event? Not dangling.
+    if (isDanglingResolved(e, completionKinds)) continue;
+
+    const isInterval = e.label.includes("setInterval");
+    const isTimer = e.kind === "timer-start";
+    const isFetchOp = e.kind === "request" && e.label.startsWith("fetch:");
+    const isWs = e.kind === "request" && e.label.startsWith("ws:");
+    const opType = isFetchOp ? "fetch" : isWs ? "WebSocket"
+      : isInterval ? "setInterval" : isTimer ? "setTimeout" : "async operation";
+
+    findings.push({
+      pattern: "dangling-async",
+      severity: "warning",
+      summary: `${opType} "${e.label}" started but never completed (scope tore down)`,
+      detail:
+        `Operation "${e.label}" at beat ${e.beat.toFixed(2)} was started within a scope ` +
+        `that tore down at beat ${teardownAt.toFixed(2)}, but no completion event ` +
+        `(response, error, fire, or clear) was ever recorded. The ${opType} was abandoned ` +
+        `and may resolve later, attempting to update state that no longer exists.`,
+      fix: isFetchOp
+        ? "Add AbortController: const ctrl = new AbortController(); fetch(url, {signal: ctrl.signal}); return () => ctrl.abort();"
+        : isInterval
+        ? "Clear interval in cleanup: return () => clearInterval(id);"
+        : isTimer
+        ? "Clear timeout in cleanup: return () => clearTimeout(id);"
+        : isWs
+        ? "Close WebSocket in cleanup: return () => ws.close();"
+        : "Clean up the async operation in the useEffect return function.",
+      events: [e],
+      beatRange: [e.beat, teardownAt],
+    });
+  }
+
+  return findings;
+}
+
 // ─── Fingerprinting ─────────────────────────────────────────────────
 // Single source of truth. Used by reporter (session dedup) and tracker (persistence).
 
@@ -532,6 +656,7 @@ export function analyze(
     ["double-trigger", () => detectDoubleTrigger(sorted)],
     ["sequence-gap", () => detectSequenceGap(trace)],
     ["stale-overwrite", () => detectStaleOverwrite(sorted)],
+    ["dangling-async", () => detectDanglingAsync(trace)],
   ];
 
   const severityOrder: Record<FindingSeverity, number> = {

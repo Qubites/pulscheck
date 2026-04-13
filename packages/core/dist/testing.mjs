@@ -875,6 +875,66 @@ function metaEqual(a, b) {
   if (keysA.length !== keysB.length) return false;
   return keysA.every((k) => a[k] === b[k]);
 }
+function isDanglingResolved(start, completionKinds) {
+  const kinds = completionKinds.get(start.correlationId);
+  if (!kinds) return false;
+  if (start.kind === "request" && start.label.startsWith("fetch:")) {
+    return kinds.has("response") || kinds.has("error");
+  }
+  if (start.kind === "request" && start.label.startsWith("ws:")) {
+    return kinds.has("response") || kinds.has("error") || kinds.has("close");
+  }
+  if (start.kind === "timer-start" && start.label.includes("setInterval")) {
+    return kinds.has("timer-clear");
+  }
+  if (start.kind === "timer-start") {
+    return kinds.has("timer-end") || kinds.has("timer-clear");
+  }
+  return kinds.has("response") || kinds.has("error") || kinds.has("timer-end") || kinds.has("timer-clear") || kinds.has("close");
+}
+function detectDanglingAsync(trace) {
+  const findings = [];
+  const scopeTeardown = /* @__PURE__ */ new Map();
+  for (const e of trace) {
+    if (isTeardown(e)) {
+      scopeTeardown.set(e.correlationId, e.beat);
+    }
+  }
+  if (scopeTeardown.size === 0) return findings;
+  const completionKinds = /* @__PURE__ */ new Map();
+  for (const e of trace) {
+    if (!e.kind) continue;
+    let kinds = completionKinds.get(e.correlationId);
+    if (!kinds) {
+      kinds = /* @__PURE__ */ new Set();
+      completionKinds.set(e.correlationId, kinds);
+    }
+    kinds.add(e.kind);
+  }
+  for (const e of trace) {
+    if (!isOperationStart(e)) continue;
+    if (!e.parentId) continue;
+    const teardownAt = scopeTeardown.get(e.parentId);
+    if (teardownAt === void 0) continue;
+    if (e.beat >= teardownAt) continue;
+    if (isDanglingResolved(e, completionKinds)) continue;
+    const isInterval = e.label.includes("setInterval");
+    const isTimer = e.kind === "timer-start";
+    const isFetchOp = e.kind === "request" && e.label.startsWith("fetch:");
+    const isWs = e.kind === "request" && e.label.startsWith("ws:");
+    const opType = isFetchOp ? "fetch" : isWs ? "WebSocket" : isInterval ? "setInterval" : isTimer ? "setTimeout" : "async operation";
+    findings.push({
+      pattern: "dangling-async",
+      severity: "warning",
+      summary: `${opType} "${e.label}" started but never completed (scope tore down)`,
+      detail: `Operation "${e.label}" at beat ${e.beat.toFixed(2)} was started within a scope that tore down at beat ${teardownAt.toFixed(2)}, but no completion event (response, error, fire, or clear) was ever recorded. The ${opType} was abandoned and may resolve later, attempting to update state that no longer exists.`,
+      fix: isFetchOp ? "Add AbortController: const ctrl = new AbortController(); fetch(url, {signal: ctrl.signal}); return () => ctrl.abort();" : isInterval ? "Clear interval in cleanup: return () => clearInterval(id);" : isTimer ? "Clear timeout in cleanup: return () => clearTimeout(id);" : isWs ? "Close WebSocket in cleanup: return () => ws.close();" : "Clean up the async operation in the useEffect return function.",
+      events: [e],
+      beatRange: [e.beat, teardownAt]
+    });
+  }
+  return findings;
+}
 function analyze(trace, opts = {}) {
   const suppress = new Set(opts.suppress ?? []);
   const minSev = opts.minSeverity ?? "info";
@@ -884,7 +944,8 @@ function analyze(trace, opts = {}) {
     ["response-reorder", () => detectResponseReorder(sorted)],
     ["double-trigger", () => detectDoubleTrigger(sorted)],
     ["sequence-gap", () => detectSequenceGap(trace)],
-    ["stale-overwrite", () => detectStaleOverwrite(sorted)]
+    ["stale-overwrite", () => detectStaleOverwrite(sorted)],
+    ["dangling-async", () => detectDanglingAsync(trace)]
   ];
   const severityOrder = {
     critical: 0,

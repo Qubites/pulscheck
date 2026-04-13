@@ -195,12 +195,13 @@ declare function restore(): void;
  *
  * Feed it a trace, it tells you what's wrong. No configuration needed.
  *
- * Detects 5 patterns:
+ * Detects 6 patterns:
  *   1. after-teardown   — event fires after a known cleanup/dispose/unmount
  *   2. response-reorder — responses arrive in different order than requests
  *   3. double-trigger   — same operation starts twice concurrently
  *   4. sequence-gap     — numbered sequences with missing entries
  *   5. stale-overwrite  — older operation's result overwrites newer one
+ *   6. dangling-async   — operation started but never completed before scope teardown
  *
  * @example
  *   import { tw, analyze } from 'pulscheck'
@@ -210,7 +211,7 @@ declare function restore(): void;
  */
 
 type FindingSeverity = "critical" | "warning" | "info";
-type FindingPattern = "after-teardown" | "response-reorder" | "double-trigger" | "sequence-gap" | "stale-overwrite";
+type FindingPattern = "after-teardown" | "response-reorder" | "double-trigger" | "sequence-gap" | "stale-overwrite" | "dangling-async";
 interface Finding {
     pattern: FindingPattern;
     severity: FindingSeverity;
