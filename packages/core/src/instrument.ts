@@ -260,10 +260,12 @@ function patchEvents(opts?: EventInstrumentOptions): void {
     for (const ex of opts.exclude) allowed.delete(ex);
   }
 
-  // Map original handlers to wrapped handlers for proper removeEventListener
+  // Map original handlers to wrapped handlers for proper removeEventListener.
+  // Also stores the correlationId from listener:add so listener:remove can reference it.
+  interface ListenerEntry { wrapped: EventListener; correlationId?: string }
   const wrapperMap = new WeakMap<
     EventListenerOrEventListenerObject,
-    Map<string, EventListener>
+    Map<string, ListenerEntry>
   >();
 
   const patchedAdd = function addEventListener(
@@ -277,6 +279,19 @@ function patchEvents(opts?: EventInstrumentOptions): void {
     }
 
     const scope = currentScope();
+    const isOnce = typeof options === "object" && options?.once === true;
+
+    // Emit listener:add when inside an active scope (and not {once: true} which auto-removes)
+    let addCid: string | undefined;
+    if (scope && !isOnce) {
+      addCid = tw.pulse(`listener:${type}:add`, {
+        lane: "ui",
+        kind: "listener-add",
+        source: "auto",
+        parentId: scope.correlationId,
+        meta: { type },
+      }).correlationId;
+    }
 
     const target = this;
     const wrapped: EventListener = function (event: Event) {
@@ -297,9 +312,9 @@ function patchEvents(opts?: EventInstrumentOptions): void {
       }
     };
 
-    // Store mapping so removeEventListener can find the wrapper
+    // Store mapping so removeEventListener can find the wrapper and its correlationId
     if (!wrapperMap.has(listener)) wrapperMap.set(listener, new Map());
-    wrapperMap.get(listener)!.set(type, wrapped);
+    wrapperMap.get(listener)!.set(type, { wrapped, correlationId: addCid });
 
     return origAdd.call(this, type, wrapped, options);
   };
@@ -313,11 +328,22 @@ function patchEvents(opts?: EventInstrumentOptions): void {
     if (!listener) return origRemove.call(this, type, listener, options);
 
     const mappings = wrapperMap.get(listener);
-    const wrapped = mappings?.get(type);
+    const entry = mappings?.get(type);
 
-    if (wrapped) {
+    if (entry) {
       mappings!.delete(type);
-      return origRemove.call(this, type, wrapped, options);
+
+      // Emit listener:remove with the same correlationId as the add
+      if (entry.correlationId) {
+        tw.pulse(`listener:${type}:remove`, {
+          lane: "ui",
+          kind: "listener-remove",
+          source: "auto",
+          correlationId: entry.correlationId,
+        });
+      }
+
+      return origRemove.call(this, type, entry.wrapped, options);
     }
 
     return origRemove.call(this, type, listener, options);

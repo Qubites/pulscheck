@@ -414,6 +414,17 @@ function patchEvents(opts) {
       return origAdd.call(this, type, listener, options);
     }
     const scope = currentScope();
+    const isOnce = typeof options === "object" && options?.once === true;
+    let addCid;
+    if (scope && !isOnce) {
+      addCid = tw.pulse(`listener:${type}:add`, {
+        lane: "ui",
+        kind: "listener-add",
+        source: "auto",
+        parentId: scope.correlationId,
+        meta: { type }
+      }).correlationId;
+    }
     const target = this;
     const wrapped = function(event) {
       tw.pulse(`event:${type}`, {
@@ -433,16 +444,24 @@ function patchEvents(opts) {
       }
     };
     if (!wrapperMap.has(listener)) wrapperMap.set(listener, /* @__PURE__ */ new Map());
-    wrapperMap.get(listener).set(type, wrapped);
+    wrapperMap.get(listener).set(type, { wrapped, correlationId: addCid });
     return origAdd.call(this, type, wrapped, options);
   };
   const patchedRemove = function removeEventListener(type, listener, options) {
     if (!listener) return origRemove.call(this, type, listener, options);
     const mappings = wrapperMap.get(listener);
-    const wrapped = mappings?.get(type);
-    if (wrapped) {
+    const entry = mappings?.get(type);
+    if (entry) {
       mappings.delete(type);
-      return origRemove.call(this, type, wrapped, options);
+      if (entry.correlationId) {
+        tw.pulse(`listener:${type}:remove`, {
+          lane: "ui",
+          kind: "listener-remove",
+          source: "auto",
+          correlationId: entry.correlationId
+        });
+      }
+      return origRemove.call(this, type, entry.wrapped, options);
     }
     return origRemove.call(this, type, listener, options);
   };
@@ -660,12 +679,12 @@ function isRender(e) {
   return matchesAny(e.label, RENDER_SIGNALS);
 }
 function isOperationStart(e) {
-  if (e.kind) return e.kind === "request" || e.kind === "timer-start";
+  if (e.kind) return e.kind === "request" || e.kind === "timer-start" || e.kind === "listener-add";
   return e.label.endsWith(":start") || matchesAny(e.label, REQUEST_SIGNALS) && !matchesAny(e.label, RESPONSE_SIGNALS);
 }
 function isOperationEnd(e) {
   if (e.kind) {
-    return e.kind === "response" || e.kind === "timer-end" || e.kind === "timer-clear" || e.kind === "timer-tick" || e.kind === "error";
+    return e.kind === "response" || e.kind === "timer-end" || e.kind === "timer-clear" || e.kind === "timer-tick" || e.kind === "error" || e.kind === "listener-remove";
   }
   return matchesAny(e.label, ["end", "complete", "response", "done", "fire", "clear", "tick"]);
 }
@@ -902,7 +921,10 @@ function isDanglingResolved(start, completionKinds) {
   if (start.kind === "timer-start") {
     return kinds.has("timer-end") || kinds.has("timer-clear");
   }
-  return kinds.has("response") || kinds.has("error") || kinds.has("timer-end") || kinds.has("timer-clear") || kinds.has("close");
+  if (start.kind === "listener-add") {
+    return kinds.has("listener-remove");
+  }
+  return kinds.has("response") || kinds.has("error") || kinds.has("timer-end") || kinds.has("timer-clear") || kinds.has("listener-remove") || kinds.has("close");
 }
 function detectDanglingAsync(trace) {
   const findings = [];
@@ -934,13 +956,14 @@ function detectDanglingAsync(trace) {
     const isTimer = e.kind === "timer-start";
     const isFetchOp = e.kind === "request" && e.label.startsWith("fetch:");
     const isWs = e.kind === "request" && e.label.startsWith("ws:");
-    const opType = isFetchOp ? "fetch" : isWs ? "WebSocket" : isInterval ? "setInterval" : isTimer ? "setTimeout" : "async operation";
+    const isListener = e.kind === "listener-add";
+    const opType = isFetchOp ? "fetch" : isWs ? "WebSocket" : isInterval ? "setInterval" : isTimer ? "setTimeout" : isListener ? "event listener" : "async operation";
     findings.push({
       pattern: "dangling-async",
       severity: "warning",
       summary: `${opType} "${e.label}" started but never completed (scope tore down)`,
-      detail: `Operation "${e.label}" at beat ${e.beat.toFixed(2)} was started within a scope that tore down at beat ${teardownAt.toFixed(2)}, but no completion event (response, error, fire, or clear) was ever recorded. The ${opType} was abandoned and may resolve later, attempting to update state that no longer exists.`,
-      fix: isFetchOp ? "Add AbortController: const ctrl = new AbortController(); fetch(url, {signal: ctrl.signal}); return () => ctrl.abort();" : isInterval ? "Clear interval in cleanup: return () => clearInterval(id);" : isTimer ? "Clear timeout in cleanup: return () => clearTimeout(id);" : isWs ? "Close WebSocket in cleanup: return () => ws.close();" : "Clean up the async operation in the useEffect return function.",
+      detail: isListener ? `Event listener "${e.label}" at beat ${e.beat.toFixed(2)} was added within a scope that tore down at beat ${teardownAt.toFixed(2)}, but removeEventListener was never called. The listener's closure retains references to component state, preventing garbage collection.` : `Operation "${e.label}" at beat ${e.beat.toFixed(2)} was started within a scope that tore down at beat ${teardownAt.toFixed(2)}, but no completion event (response, error, fire, or clear) was ever recorded. The ${opType} was abandoned and may resolve later, attempting to update state that no longer exists.`,
+      fix: isFetchOp ? "Add AbortController: const ctrl = new AbortController(); fetch(url, {signal: ctrl.signal}); return () => ctrl.abort();" : isInterval ? "Clear interval in cleanup: return () => clearInterval(id);" : isTimer ? "Clear timeout in cleanup: return () => clearTimeout(id);" : isWs ? "Close WebSocket in cleanup: return () => ws.close();" : isListener ? "Remove listener in cleanup: return () => target.removeEventListener(type, handler);" : "Clean up the async operation in the useEffect return function.",
       events: [e],
       beatRange: [e.beat, teardownAt]
     });

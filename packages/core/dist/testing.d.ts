@@ -1,6 +1,6 @@
 type PulseLane = "ui" | "api" | "auth" | "ws" | "worker" | (string & {});
 /** Structured event classification. Auto-instrumentation always sets this. */
-type PulseKind = "request" | "response" | "error" | "timer-start" | "timer-end" | "timer-tick" | "timer-clear" | "dom-event" | "message" | "close" | "scope-start" | "scope-end" | "state-write" | "render" | "custom" | (string & {});
+type PulseKind = "request" | "response" | "error" | "timer-start" | "timer-end" | "timer-tick" | "timer-clear" | "listener-add" | "listener-remove" | "dom-event" | "message" | "close" | "scope-start" | "scope-end" | "state-write" | "render" | "custom" | (string & {});
 /** Who emitted the event. */
 type PulseSource = "auto" | "manual" | "scope" | (string & {});
 interface PulseOptions {

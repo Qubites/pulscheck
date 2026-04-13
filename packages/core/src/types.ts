@@ -4,6 +4,7 @@ export type PulseLane = "ui"|"api"|"auth"|"ws"|"worker"|(string & {});
 export type PulseKind =
   | "request" | "response" | "error"
   | "timer-start" | "timer-end" | "timer-tick" | "timer-clear"
+  | "listener-add" | "listener-remove"
   | "dom-event" | "message" | "close"
   | "scope-start" | "scope-end"
   | "state-write" | "render"

@@ -125,14 +125,14 @@ function isRender(e: PulseEvent): boolean {
 }
 
 function isOperationStart(e: PulseEvent): boolean {
-  if (e.kind) return e.kind === "request" || e.kind === "timer-start";
+  if (e.kind) return e.kind === "request" || e.kind === "timer-start" || e.kind === "listener-add";
   return e.label.endsWith(":start") || (matchesAny(e.label, REQUEST_SIGNALS) && !matchesAny(e.label, RESPONSE_SIGNALS));
 }
 
 function isOperationEnd(e: PulseEvent): boolean {
   if (e.kind) {
     return e.kind === "response" || e.kind === "timer-end" || e.kind === "timer-clear"
-      || e.kind === "timer-tick" || e.kind === "error";
+      || e.kind === "timer-tick" || e.kind === "error" || e.kind === "listener-remove";
   }
   return matchesAny(e.label, ["end", "complete", "response", "done", "fire", "clear", "tick"]);
 }
@@ -538,9 +538,15 @@ function isDanglingResolved(
     return kinds.has("timer-end") || kinds.has("timer-clear");
   }
 
+  // Event listener — needs explicit removeEventListener
+  if (start.kind === "listener-add") {
+    return kinds.has("listener-remove");
+  }
+
   // Generic manual start
   return kinds.has("response") || kinds.has("error")
-    || kinds.has("timer-end") || kinds.has("timer-clear") || kinds.has("close");
+    || kinds.has("timer-end") || kinds.has("timer-clear")
+    || kinds.has("listener-remove") || kinds.has("close");
 }
 
 function detectDanglingAsync(trace: readonly PulseEvent[]): Finding[] {
@@ -587,18 +593,23 @@ function detectDanglingAsync(trace: readonly PulseEvent[]): Finding[] {
     const isTimer = e.kind === "timer-start";
     const isFetchOp = e.kind === "request" && e.label.startsWith("fetch:");
     const isWs = e.kind === "request" && e.label.startsWith("ws:");
+    const isListener = e.kind === "listener-add";
     const opType = isFetchOp ? "fetch" : isWs ? "WebSocket"
-      : isInterval ? "setInterval" : isTimer ? "setTimeout" : "async operation";
+      : isInterval ? "setInterval" : isTimer ? "setTimeout"
+      : isListener ? "event listener" : "async operation";
 
     findings.push({
       pattern: "dangling-async",
       severity: "warning",
       summary: `${opType} "${e.label}" started but never completed (scope tore down)`,
-      detail:
-        `Operation "${e.label}" at beat ${e.beat.toFixed(2)} was started within a scope ` +
-        `that tore down at beat ${teardownAt.toFixed(2)}, but no completion event ` +
-        `(response, error, fire, or clear) was ever recorded. The ${opType} was abandoned ` +
-        `and may resolve later, attempting to update state that no longer exists.`,
+      detail: isListener
+        ? `Event listener "${e.label}" at beat ${e.beat.toFixed(2)} was added within a scope ` +
+          `that tore down at beat ${teardownAt.toFixed(2)}, but removeEventListener was never called. ` +
+          `The listener's closure retains references to component state, preventing garbage collection.`
+        : `Operation "${e.label}" at beat ${e.beat.toFixed(2)} was started within a scope ` +
+          `that tore down at beat ${teardownAt.toFixed(2)}, but no completion event ` +
+          `(response, error, fire, or clear) was ever recorded. The ${opType} was abandoned ` +
+          `and may resolve later, attempting to update state that no longer exists.`,
       fix: isFetchOp
         ? "Add AbortController: const ctrl = new AbortController(); fetch(url, {signal: ctrl.signal}); return () => ctrl.abort();"
         : isInterval
@@ -607,6 +618,8 @@ function detectDanglingAsync(trace: readonly PulseEvent[]): Finding[] {
         ? "Clear timeout in cleanup: return () => clearTimeout(id);"
         : isWs
         ? "Close WebSocket in cleanup: return () => ws.close();"
+        : isListener
+        ? "Remove listener in cleanup: return () => target.removeEventListener(type, handler);"
         : "Clean up the async operation in the useEffect return function.",
       events: [e],
       beatRange: [e.beat, teardownAt],
