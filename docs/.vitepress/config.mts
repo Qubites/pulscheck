@@ -19,6 +19,7 @@ export default defineConfig({
         text: 'Guide',
         items: [
           { text: 'Visual Explainer', link: '/guide/visual-explainer' },
+          { text: 'Where Bugs Live', link: '/guide/where-bugs-live' },
           { text: 'Getting Started', link: '/guide/getting-started' },
           { text: 'How It Works', link: '/guide/how-it-works' },
           { text: 'React Integration', link: '/guide/react' },
