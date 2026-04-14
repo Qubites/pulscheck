@@ -137,7 +137,7 @@ PulsCheck comprises five components arranged in a pipeline:
 
 \subsection{Auto-Instrumentation}
 
-The instrumentation layer replaces six categories of global functions with instrumented versions. Each replacement function:
+The instrumentation layer replaces eight global functions---grouped into four categories (\texttt{fetch}; timers \texttt{setTimeout}/\texttt{setInterval}/\texttt{clearTimeout}/\texttt{clearInterval}; event listeners \texttt{addEventListener}/\texttt{removeEventListener}; and \texttt{WebSocket})---with instrumented versions. Each replacement function:
 
 \begin{enumerate}
   \item Captures the call site from the current stack trace
@@ -177,13 +177,15 @@ Each recorded event contains:
 \textbf{Field} & \textbf{Type} & \textbf{Description} \\
 \midrule
 label & string & Operation identifier, e.g., \texttt{fetch:/api/users:start} \\
-lane & string & Execution category: \texttt{api}, \texttt{ui}, \texttt{ws}, \texttt{worker} \\
+lane & string & Execution category: \texttt{ui}, \texttt{api}, \texttt{auth}, \texttt{ws}, \texttt{worker}, or custom \\
 beat & number & High-resolution timestamp via \texttt{performance.now()} \\
 ts & number & Wall-clock timestamp via \texttt{Date.now()} \\
+public & boolean & Whether the event is retained in production builds \\
 correlationId & string & Links related events (request $\leftrightarrow$ response) \\
 parentId & string? & Links to a correlation scope for lifecycle tracking \\
 callSite & string? & Source file and line, e.g., \texttt{src/hooks/useFaq.ts:20} \\
 kind & string? & Classification: \texttt{request}, \texttt{response}, \texttt{timer-start}, etc. \\
+source & string? & Origin: \texttt{auto}, \texttt{manual}, or \texttt{scope} \\
 meta & object? & Operation-specific metadata (URL, method, delay, etc.) \\
 \bottomrule
 \end{tabular}
@@ -207,7 +209,7 @@ The analyser runs seven independent detectors against the ring buffer contents:
 
 \textbf{Pattern 2: Response-Reorder.} The detector groups request events by their base label (e.g., \texttt{fetch:/api/search}) and checks whether corresponding response events arrived in the same order. If requests were sent at beats [100, 105] but responses arrived at beats [200, 195], the detector reports a response-reorder finding. This pattern detects the classic ``stale search results'' bug where a slower, older query's results overwrite a faster, newer query's results.
 
-\textbf{Pattern 3: Double-Trigger.} The detector identifies pairs of start events with matching labels where the second fires before the first's corresponding end event. For the finding to be reported, both events must target the same operation (same label). The detector uses convention-based matching to identify end events: labels containing ``end'', ``complete'', ``response'', ``done'', ``fire'', ``clear'', or ``tick''.
+\textbf{Pattern 3: Double-Trigger.} The detector identifies pairs of start events with matching labels where the second fires before the first's corresponding end event. For the finding to be reported, both events must target the same operation (same label). End-event classification prefers the structured \texttt{kind} field (\texttt{response}, \texttt{timer-end}, \texttt{timer-tick}, \texttt{timer-clear}, \texttt{error}, \texttt{listener-remove}) set by the auto-instrumentation layer; when \texttt{kind} is absent (manual pulses), the detector falls back to a 14-suffix label allowlist: \texttt{end}, \texttt{complete}, \texttt{response}, \texttt{done}, \texttt{fire}, \texttt{clear}, \texttt{tick}, \texttt{cancel}, \texttt{abort}, \texttt{close}, \texttt{stop}, \texttt{finish}, \texttt{resolve}, \texttt{unsubscribe}. The severity is \texttt{critical} when the two starts carry identical parameters after stripping instrumentation-internal keys (\texttt{generation}, \texttt{latestGeneration}) and \texttt{info} when parameters differ, because different parameters usually indicate intentional concurrency.
 
 \textbf{Pattern 4: Sequence-Gap.} The detector examines events carrying sequential metadata (\texttt{meta.seq}) and identifies missing entries in the sequence. This is primarily relevant for WebSocket message streams where dropped messages indicate a connection issue.
 
@@ -235,7 +237,7 @@ meta.latestGeneration = currentGeneration(endpoint);  // 4 (newer)
 
 The response-reorder detector then checks whether the stale response (lower generation) was the last to resolve. If \texttt{generation < latestGeneration} for the final response in temporal order, the finding is elevated from ``warning'' to ``critical''.
 
-This adds 33 lines of code and zero runtime overhead beyond the counter increment. It does not require Babel plugins, React internals, or framework-specific hooks---it operates entirely within the existing global function interception layer.
+This adds approximately 25 lines of code to \texttt{instrument.ts} (a module-level \texttt{endpointGeneration} map, two helper functions, and the call-site integrations in the \texttt{fetch} patch) and zero runtime overhead beyond a \texttt{Map.get}/\texttt{Map.set} pair per request. It does not require Babel plugins, React internals, or framework-specific hooks---it operates entirely within the existing global function interception layer.
 
 \subsection{Static Analysis CLI}
 
@@ -347,7 +349,7 @@ Mixed patterns      & \phantom{0}7  & \phantom{0}5  & \phantom{0}71.4\%  & DevEx
 \label{tab:real-audit}
 \end{table}
 
-\textbf{What the detectors actually fired.} Across all 77 tests, the analyser produced 192 findings spanning 4 of the 7 detection patterns:
+\textbf{What the detectors actually fired.} Across all 77 tests, the analyser produced 193 findings spanning 4 of the 7 detection patterns:
 
 \begin{table}[h]
 \centering
@@ -356,7 +358,7 @@ Mixed patterns      & \phantom{0}7  & \phantom{0}5  & \phantom{0}71.4\%  & DevEx
 \toprule
 \textbf{Pattern} & \textbf{Findings} & \textbf{Why this rate} \\
 \midrule
-after-teardown   & 87 & Auto-fires on any timer/listener/fetch event after \texttt{scope.end()} \\
+after-teardown   & 88 & Auto-fires on any timer/listener/fetch event after \texttt{scope.end()} \\
 dangling-async   & 61 & Auto-fires on any operation open at scope teardown \\
 double-trigger   & 43 & Auto-fires on duplicate concurrent starts (same label) \\
 response-reorder & \phantom{0}1  & Requires \emph{same} normalised endpoint --- most tests use distinct URLs \\
@@ -369,7 +371,9 @@ layout-thrash    & \phantom{0}0  & Requires DOM read/write markers; \texttt{inst
 \label{tab:detector-fires}
 \end{table}
 
-\textbf{Why 11 fetch-race tests are missed.} All 11 misses (BUG-4, -5, -33, -36, -37, -38, -39, -41, -47, -48, -50) involve concurrent fetches to \emph{distinct URL endpoints}. Examples: an SWR cache-key change from \texttt{/user/alice} to \texttt{/user/bob}; a TanStack Query mutation to \texttt{/todos/update} racing a refetch to \texttt{/todos}; a form's async validation to \texttt{/validate/email} racing a submit to \texttt{/submit}. The response-reorder and stale-overwrite detectors group requests by normalised endpoint label, so they correctly do not flag these as ``the same operation racing itself.'' Detecting cross-endpoint races requires a higher-level abstraction (e.g., key-aware cache observers like the ones SWR and React Query implement internally) that PulsCheck currently does not provide.
+\textbf{Why the 11 missed tests are missed.} Nine of the 11 misses (BUG-4, -33, -36, -37, -38, -39, -47, -48, -50) involve concurrent fetches to \emph{distinct URL endpoints}. Examples: an SWR cache-key change from \texttt{/user/alice} to \texttt{/user/bob}; a TanStack Query mutation to \texttt{/todos/update} racing a refetch to \texttt{/todos}; a form's async validation to \texttt{/validate/email} racing a submit to \texttt{/submit}. The response-reorder and stale-overwrite detectors group requests by normalised endpoint label, so they correctly do not flag these as ``the same operation racing itself.'' Detecting cross-endpoint races requires a higher-level abstraction (e.g., key-aware cache observers like the ones SWR and React Query implement internally) that PulsCheck currently does not provide.
+
+The remaining two misses have different causes. BUG-5 (pmndrs/zustand) is a \texttt{setTimeout}-on-unmount pattern whose reproduction uses \texttt{clearTimeout} as a test-safety call before invoking \texttt{analyze()}; the trace therefore contains a valid completion event that the dangling-async detector accepts, and the audit records a miss. This is a reproduction artefact rather than a detector gap---in real application code where \texttt{clearTimeout} is the missing cleanup, the same detector would fire. BUG-41 (axios/axios) is a same-path different-parameter case: both requests hit \texttt{/axios/search} with different \texttt{?q=} query strings, and since \texttt{truncateUrl} uses \texttt{URL.pathname} they group as one endpoint. The double-trigger detector does flag the overlap but downgrades the severity to \texttt{info} with the summary ``different parameters---likely intentional concurrency.'' The audit harness counts only \texttt{warning} or \texttt{critical} verdicts as detection, so BUG-41 is recorded as missed despite producing an informational finding. Only the nine distinct-endpoint cases represent a genuine capability gap in the current detector surface.
 
 \textbf{Why three detectors fire zero times.} The 3 inactive detectors (sequence-gap, stale-overwrite, layout-thrash) work and are exercised by their unit tests, but their event sources are not produced by the auto-instrumentation layer alone. Sequence-gap requires \texttt{meta.seq} numbering on events---historically populated for WebSocket message frames---which raw fetch and timer instrumentation does not generate. Stale-overwrite requires explicit \texttt{setState}/render events to compare against fetch responses, which would require patching React internals. Layout-thrash requires DOM read/write markers (\texttt{offsetHeight}, \texttt{getBoundingClientRect}, \texttt{style.width=}), which would require patching DOM property descriptors. Extending \texttt{instrument()} to cover these sources is straightforward in principle but was out of scope for this evaluation.
 
@@ -419,7 +423,7 @@ The ring buffer uses $O(1)$ insertion with fixed memory (10,000 events $\times$ 
 
 \textbf{Single-page scope.} PulsCheck operates within a single browser tab's JavaScript context. It cannot detect race conditions that span multiple tabs, workers, or server-side processes.
 
-\textbf{Heuristic detection.} The seven patterns are heuristic, not formally verified. False positives are possible when the detected pattern is intentional behaviour (e.g., deliberate duplicate requests for redundancy). False negatives are possible for race condition patterns not covered by the seven detectors. The 85.7\% detection rate in the real-code audit means 14.3\% of real race conditions are missed---and we know exactly why: 11 of 11 misses involve concurrent fetches to distinct URL endpoints, which requires cross-endpoint cache awareness that PulsCheck does not currently provide.
+\textbf{Heuristic detection.} The seven patterns are heuristic, not formally verified. False positives are possible when the detected pattern is intentional behaviour (e.g., deliberate duplicate requests for redundancy). False negatives are possible for race condition patterns not covered by the seven detectors. The 85.7\% detection rate in the real-code audit means 14.3\% of real race conditions are missed. Nine of the 11 misses involve concurrent fetches to distinct URL endpoints, which requires cross-endpoint cache awareness that PulsCheck does not currently provide. The remaining two have separate causes: a reproduction artefact where test-safety \texttt{clearTimeout} is called before \texttt{analyze()} (BUG-5), and an info-severity downgrade on same-path different-parameter concurrency (BUG-41). Only the distinct-endpoint category represents a genuine detector capability gap.
 
 \textbf{Detector coverage from auto-instrumentation alone.} Of the seven detectors, only four (after-teardown, dangling-async, double-trigger, response-reorder) fire from raw \texttt{instrument()} output. The remaining three (sequence-gap, stale-overwrite, layout-thrash) require event sources the auto-instrumentation layer does not yet capture: WebSocket frame sequence numbering, React/setState observability, and DOM property access tracking respectively. These detectors are functional and exercised through their own unit tests, but they contribute zero findings to the real-code audit numbers above.
 
@@ -473,7 +477,7 @@ AI code generation tools operate on code structure, not runtime timing. A tool t
 % ─── 6. Conclusion ───────────────────────────────────────────────
 \section{Conclusion}
 
-We have presented PulsCheck, a runtime race condition detection system for frontend applications that intercepts asynchronous primitives and applies heuristic pattern detectors with source code attribution. Initial results are encouraging: the system detected previously unknown race conditions in a production application, achieved 85.7\% detection across 77 race conditions reproduced from 71 distinct open-source repositories using only auto-instrumentation, and produced zero false positives in the test scenarios evaluated. We also explicitly characterise the limits of the approach: 4 of the 7 detectors fire from raw auto-instrumentation, the remaining 3 require event sources outside the current instrumentation surface, and 11 of 11 missed cases share a single root cause (concurrent fetches to distinct URL endpoints).
+We have presented PulsCheck, a runtime race condition detection system for frontend applications that intercepts asynchronous primitives and applies heuristic pattern detectors with source code attribution. Initial results are encouraging: the system detected previously unknown race conditions in a production application, achieved 85.7\% detection across 77 race conditions reproduced from 71 distinct open-source repositories using only auto-instrumentation, and produced zero false positives in the test scenarios evaluated. We also explicitly characterise the limits of the approach: 4 of the 7 detectors fire from raw auto-instrumentation, the remaining 3 require event sources outside the current instrumentation surface, and 9 of the 11 missed cases share a single root cause (concurrent fetches to distinct URL endpoints), with the other 2 arising from a reproduction artefact (BUG-5) and an info-severity downgrade on same-path different-parameter concurrency (BUG-41).
 
 However, these results come from a narrow evaluation---one production application, one developer team, controlled test scenarios. The critical questions are not ``does it detect race conditions in test environments'' (it does) but ``does it save real developer time'', ``is the false positive rate tolerable in large codebases'', and ``do the findings lead to fixes or just confusion''. These can only be answered by real-world usage across diverse projects and teams.
 

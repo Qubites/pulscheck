@@ -85,14 +85,14 @@ PulsCheck comprises five components arranged in a pipeline:
 
 ### 3.1 Auto-instrumentation
 
-The instrumentation layer (`packages/core/src/instrument.ts`) replaces six categories of global functions with patched versions:
+The instrumentation layer (`packages/core/src/instrument.ts`) replaces eight global functions (`fetch`, `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`, `addEventListener`, `removeEventListener`, `WebSocket`), grouped into four categories, with patched versions:
 
-| Global | Function | Events emitted (`kind`) |
+| Category | Patched globals | Events emitted (`kind`) |
 |---|---|---|
-| `fetch` | `patchFetch()` | `request` (on call), `response` (on success), `error` (on throw) |
-| Timers | `patchTimers()` | `timer-start` on `setTimeout`/`setInterval`; `timer-end` on `setTimeout` fire; `timer-tick` on `setInterval` fire; `timer-clear` on `clearTimeout`/`clearInterval` |
-| Event listeners | `patchEvents()` | `listener-add` (only inside a scope, and not `{once: true}`); `dom-event` on each event fire; `listener-remove` on `removeEventListener` |
-| WebSocket | `patchWebSocket()` | `request` on `new WebSocket()`; `response` on `open`; `message` on `message`; `close` on `close`; `error` on `error` |
+| Fetch | `fetch` | `request` (on call), `response` (on success), `error` (on throw) |
+| Timers | `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval` | `timer-start` on `setTimeout`/`setInterval`; `timer-end` on `setTimeout` fire; `timer-tick` on `setInterval` fire; `timer-clear` on `clearTimeout`/`clearInterval` |
+| Event listeners | `addEventListener`, `removeEventListener` | `listener-add` (only inside a scope, and not `{once: true}`); `dom-event` on each event fire; `listener-remove` on `removeEventListener` |
+| WebSocket | `WebSocket` | `request` on `new WebSocket()`; `response` on `open`; `message` on `message`; `close` on `close`; `error` on `error` |
 
 A sentinel symbol (`Symbol.for("tw.patched")`) is checked before applying each patch to prevent double-patching during hot module replacement, which re-runs module initialisation in Vite and Webpack Dev Server.
 
@@ -171,7 +171,7 @@ The analyser (`analyze.ts`) runs seven independent detectors against the ring-bu
 - `critical` when **generation tracking confirms the stale response was the last to resolve**. Each fetch request increments a per-endpoint generation counter; the response stamps both its own generation and the latest generation for the endpoint. If the last response by beat has `generation < latestGeneration`, the application almost certainly consumed outdated data.
 - `warning` otherwise. The responses arrived out of order but the final one is still the latest generation, so the application may have handled it correctly.
 
-This sink-awareness adds roughly 33 lines of code in `instrument.ts` (`endpointGeneration` map and two helper functions) and zero runtime overhead beyond a `Map.get`/`Map.set` pair per request.
+This sink-awareness adds approximately 25 lines of code in `instrument.ts` (a module-level `endpointGeneration` map, two helper functions, and the call-site integrations in the `fetch` patch) and zero runtime overhead beyond a `Map.get`/`Map.set` pair per request.
 
 #### Pattern 3: `double-trigger`
 
