@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <rect width="128" height="128" rx="24" fill="#1a1a2e"/>
+  <circle cx="40" cy="64" r="8" fill="#e94560"/>
+  <circle cx="64" cy="64" r="8" fill="#e94560">
+    <animate attributeName="r" values="8;12;8" dur="1.2s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="88" cy="64" r="8" fill="#e94560"/>
+  <line x1="40" y1="64" x2="88" y2="64" stroke="#e94560" stroke-width="2" opacity="0.4"/>
+</svg>
