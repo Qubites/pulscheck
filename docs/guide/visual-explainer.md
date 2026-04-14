@@ -143,12 +143,11 @@ When PulsCheck finds a bug, it prints a warning in your browser console with:
 Example:
 
 ```
-[pulscheck] response-reorder (critical)
-  Responses for "fetch:/api/search" arrived out of request order
-  → src/hooks/useSearch.ts:20
-  Stale response was LAST to resolve — app is showing wrong data
-  Fix: Use an AbortController to cancel in-flight requests when a new one starts,
-       or track a request sequence number and ignore stale responses.
+🛑 [CRITICAL] Stale response for "fetch:/api/search" resolved last — confirmed data corruption
+   Pattern: response-reorder
+   Requests were sent in order [...] but responses arrived as [...].
+   Location: src/hooks/useSearch.ts:20
+   Fix: CONFIRMED STALE: The oldest request resolved last — its data overwrote the fresh result.
 ```
 
 Silence means no bugs found. That's good.

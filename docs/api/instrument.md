@@ -60,16 +60,18 @@ instrument({
 
 ### What gets emitted
 
-| Global | Events | `kind` |
-|--------|--------|--------|
-| `fetch` | `fetch:{url}:start` → `fetch:{url}:done` (on success) or `fetch:{url}:error` | `request` → `response` / `error` |
-| `setTimeout` | `timer:set` → `timer:fire` (or `timer:clear` on `clearTimeout`) | `timer-start` → `timer-tick` / `timer-clear` |
-| `setInterval` | `timer:set` → repeating `timer:fire` (or `timer:clear` on `clearInterval`) | `timer-start` → `timer-tick` / `timer-clear` |
-| `addEventListener` | `listener:add:{type}` on register, `event:{type}` on fire | `listener-add` → `dom-event` |
-| `removeEventListener` | `listener:remove:{type}` | `listener-remove` |
-| `WebSocket` | `ws:open`, `ws:message`, `ws:close`, `ws:error` | `message` / `close` / `error` |
+Labels use the path portion of the URL (not the full URL with query string), truncated to 120 characters. Full URL and method are preserved in `meta.url` / `meta.method`.
 
-Every auto-emitted event carries a `callSite` (`file:line`) extracted from a fresh `Error().stack`. The analyzer uses this to produce findings with both sides of a collision pinpointed in source.
+| Global | Labels | `kind` |
+|---|---|---|
+| `fetch` | `fetch:{path}:start` → `fetch:{path}:done` (success) or `fetch:{path}:error` | `request` → `response` / `error` |
+| `setTimeout` | `setTimeout:start` → `setTimeout:fire` → `setTimeout:clear` (if cancelled) | `timer-start` → `timer-end` / `timer-clear` |
+| `setInterval` | `setInterval:start` → repeating `setInterval:tick` → `setInterval:clear` (if cancelled) | `timer-start` → `timer-tick` / `timer-clear` |
+| `addEventListener` | `listener:{type}:add` on register (only when inside an active scope and not `{once: true}`), `event:{type}` on fire | `listener-add` → `dom-event` |
+| `removeEventListener` | `listener:{type}:remove` (only when the add was recorded) | `listener-remove` |
+| `WebSocket` | `ws:open:start` → `ws:open:done`, then `ws:message` / `ws:close` / `ws:error` | `request` → `response`, then `message` / `close` / `error` |
+
+Every auto-emitted event carries a `callSite` (`file:line`) extracted from `new Error().stack` (via `Error.captureStackTrace` on V8). The stack walker skips pulscheck internal frames and understands both Vite browser URLs (`http://localhost:8080/src/...?t=123:12:5`) and Node.js absolute paths.
 
 ### Default event allowlist
 

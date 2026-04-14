@@ -72,7 +72,7 @@ Emits `label:start` on creation and `label:end` on `stop()`. Both events share t
 
 ## tw.checkpoint(label, step, options?)
 
-Fire a pulse with a numeric `step` field in its metadata. The analyzer uses this to detect sequence gaps.
+Fire a pulse carrying a numeric `step` value in its `meta`. Useful for marking progress through an ordered flow.
 
 ```ts
 tw.checkpoint('onboarding', 1, { lane: 'ui' })
@@ -80,9 +80,11 @@ tw.checkpoint('onboarding', 2, { lane: 'ui' })
 tw.checkpoint('onboarding', 3, { lane: 'ui' })
 ```
 
+**Note:** the `sequence-gap` detector looks for `meta.seq` (not `meta.step`). `tw.checkpoint` does **not** currently feed the sequence-gap detector — to make sequence-gap fire, emit events with `tw.pulse(label, { meta: { seq } })` directly.
+
 ## tw.scope(name, options?)
 
-Create a correlation scope. All auto-instrumented events that fire while this scope is active capture its `correlationId` as their `parentId`. Call `scope.end()` to emit a `scope-end` event and close the scope.
+Create a correlation scope. Emits `"{name}:start"` with `kind: "scope-start"` immediately, pushes the scope onto the global scope stack, and returns a `Scope` handle. All auto-instrumented events that fire while this scope is on top of the stack capture its `correlationId` as their `parentId`. Call `scope.end()` to emit the teardown event and pop the scope.
 
 ```ts
 const scope = tw.scope('checkout-flow', { lane: 'ui' })
@@ -90,7 +92,7 @@ const scope = tw.scope('checkout-flow', { lane: 'ui' })
 await fetch('/api/submit-order')   // parentId → scope.correlationId
 setTimeout(pollStatus, 1000)       // parentId → scope.correlationId
 
-scope.end()                        // emits "checkout-flow" with kind: scope-end
+scope.end()                        // emits "checkout-flow:teardown" with kind: "scope-end"
 ```
 
 **Returns:** `Scope`

@@ -6,7 +6,7 @@
 
 Runtime race condition detection for frontend apps. One function call, seven detectors, zero config.
 
-**Validated on 77 real bugs from 71 open-source repos — 85.7% detection rate.** All tests use real `fetch`/`setTimeout`/`addEventListener` captured by `instrument()`. No hand-crafted events.
+**Detection rate on the current audit corpus: 66 of 77 documented bugs (85.7%), drawn from 71 open-source repositories.** The audit is broken down by bug category: 100% on timer-leak bugs (25/25), 100% on listener-leak bugs (20/20), 64% on fetch-race bugs (16/25), and 71.4% on a mixed real-code subset (5/7). All test inputs are real `fetch` / `setTimeout` / `addEventListener` call streams captured by `instrument()` — there are no synthetic events. Reproduce from `packages/core/` with `pnpm vitest run tests/real-*`. Full methodology, per-detector breakdown, and the list of misses are in [PAPER.md](PAPER.md).
 
 ## Install
 
@@ -64,10 +64,11 @@ devMode();
 That's it. Open your browser console. PulsCheck reports race conditions as they happen:
 
 ```
-[PulsCheck] response-reorder (critical)
-  Responses for "fetch:/api/search" arrived out of request order
-  → src/hooks/useSearch.ts:20
-  Stale response was LAST to resolve — app is showing wrong data
+🛑 [CRITICAL] Stale response for "fetch:/api/search" resolved last — confirmed data corruption
+   Pattern: response-reorder
+   Requests were sent in order [...] but responses arrived as [...].
+   Location: src/hooks/useSearch.ts:20
+   Fix: CONFIRMED STALE: The oldest request resolved last — its data overwrote the fresh result.
 ```
 
 ## What it catches
@@ -76,13 +77,17 @@ That's it. Open your browser console. PulsCheck reports race conditions as they 
 
 | Pattern | Example | Severity |
 |---------|---------|----------|
-| **after-teardown** | fetch completes after component unmounts | critical |
-| **response-reorder** | slow search response overwrites fast one | critical |
-| **double-trigger** | two identical fetches fire 0.3ms apart | critical |
-| **dangling-async** | operation started but never completed before teardown | critical |
-| **sequence-gap** | WebSocket messages arrive out of order | warning |
-| **stale-overwrite** | old response overwrites newer data | warning |
-| **layout-thrash** | repeated forced reflows in the same frame | warning |
+| **after-teardown** | fetch completes after component unmounts | critical if the late event is a render/setState; otherwise warning |
+| **response-reorder** | slow search response overwrites fast one | critical if generation tracking confirms the stale response resolved last; otherwise warning |
+| **double-trigger** | two identical fetches fire 0.3ms apart | critical if parameters match; info if parameters differ (likely intentional concurrency) |
+| **dangling-async** | operation started but never completed before teardown | warning |
+| **sequence-gap** | numbered messages with missing entries in the sequence | critical |
+| **stale-overwrite** | older request's render overwrites a newer request's render | critical |
+| **layout-thrash** | repeated forced reflows in the same frame | warning at 3–4 cycles/frame; critical at ≥5 |
+
+Severity rules are defined in `packages/core/src/analyze.ts`. The default reporter surfaces `warning` and `critical` findings; `info` findings require passing `{ minSeverity: "info" }` to `devMode()`.
+
+**Coverage note.** Of the seven detectors, four fire on the 77-bug audit corpus (`after-teardown`, `double-trigger`, `dangling-async`, `response-reorder`). The three others (`sequence-gap`, `stale-overwrite`, `layout-thrash`) depend on event types or metadata that the current `instrument()` layer does not auto-emit — they require manual `tw.pulse()` instrumentation and are not validated by the current audit. See [PAPER.md](PAPER.md) §4.3 for the per-detector breakdown.
 
 ### Static analysis CLI (9 patterns)
 
@@ -145,11 +150,11 @@ npx pulscheck ci src/ --fail-on critical  # SARIF + exit code
 
 ## How it works
 
-PulsCheck patches `fetch`, `setTimeout`, `setInterval`, `addEventListener`, `removeEventListener`, and `WebSocket` at the global level. Each call is recorded as a timestamped event with its source code location (extracted from stack traces). Seven heuristic detectors analyze the event stream every 5 seconds.
+PulsCheck patches eight global asynchronous primitives — `fetch`, `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`, `addEventListener`, `removeEventListener`, and `WebSocket` — using a sentinel symbol (`Symbol.for("tw.patched")`) to prevent double-patching across hot module replacement. Each intercepted call is recorded as a timestamped `PulseEvent` with its source code location, extracted from `new Error().stack` and parsed for both Vite browser URLs and Node.js paths.
 
-Events are stored in a ring buffer (10k events, ~2MB, O(1) insertion). Findings are structurally deduplicated — one report per bug, not per occurrence.
+Events are stored in a ring buffer with a default capacity of 10,000 events (O(1) insertion, configurable via `registry.configure({ maxTrace })`). Seven heuristic detectors run over the trace on an interval (default 5,000 ms) via the built-in reporter. Findings are structurally deduplicated by a fingerprint of pattern, sorted labels, and call site — so one logical bug produces one report, not one per occurrence.
 
-**Dev-only.** The `devMode()` call tree-shakes out of production builds. Zero runtime cost in production.
+**Dev-only by convention.** `devMode()` is meant to be gated behind `import.meta.env.DEV` or `process.env.NODE_ENV === "development"` at the call site, as shown above. There is no automatic production stripping inside the package itself — if you call `devMode()` unconditionally, it will run in production.
 
 ## API
 
@@ -175,8 +180,10 @@ import { TwProvider, useScopedEffect, usePulse, usePulseMount } from "pulscheck/
 ### Testing
 
 ```typescript
-import { createTestHarness } from "pulscheck/testing";
+import { withPulsCheck, assertClean } from "pulscheck/testing";
 ```
+
+`withPulsCheck(fn)` runs a callback inside a captured pulse trace and returns `{ findings, issues, trace, expectClean() }`. Pass `{ instrument: true }` to also patch `fetch`, timers, events, and `WebSocket` for the duration of the call.
 
 ### CLI
 

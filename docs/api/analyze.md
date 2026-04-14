@@ -1,30 +1,49 @@
 # Analysis
 
-The analyzer runs 7 heuristic detectors against a pulse trace and returns structured findings.
+The analyzer runs seven heuristic detectors against a pulse trace and returns structured findings.
 
 ```ts
 import { analyze, printFindings, fingerprint, createReporter } from 'pulscheck'
 ```
 
-## analyze(trace, options?)
+## `analyze(trace, options?)`
 
-Run all detectors against a trace and return findings.
+Run all detectors against a trace and return findings, sorted by severity (critical first) then by `beat`.
 
 ```ts
+import { analyze, tw } from 'pulscheck'
+
 const findings = analyze(tw.trace)
 ```
 
-With options:
+### `AnalyzeOptions`
+
+```ts
+interface AnalyzeOptions {
+  /** Suppress specific patterns entirely */
+  suppress?: FindingPattern[]
+  /** Minimum severity to report. Default: "info" (show everything) */
+  minSeverity?: 'info' | 'warning' | 'critical'
+  /** Custom predicate — return false to drop a finding */
+  filter?: (finding: Finding) => boolean
+}
+```
+
+Example:
 
 ```ts
 const findings = analyze(tw.trace, {
-  windowMs: 16,  // collision detection window (default: 16)
+  suppress: ['layout-thrash'],
+  minSeverity: 'warning',
+  filter: (f) => !f.events.some((e) => e.callSite?.includes('node_modules')),
 })
 ```
 
+`analyze()` does **not** accept a `windowMs` option — the layout-thrash frame window (16 ms) is a module-level constant inside `analyze.ts`, not a public parameter.
+
 **Returns:** `Finding[]`
 
-### Finding
+### `Finding`
 
 ```ts
 interface Finding {
@@ -38,7 +57,7 @@ interface Finding {
 }
 ```
 
-### FindingPattern
+### `FindingPattern`
 
 ```ts
 type FindingPattern =
@@ -53,122 +72,150 @@ type FindingPattern =
 
 ## Detection patterns
 
-### after-teardown
+Severity rules are read directly from `packages/core/src/analyze.ts`. Where a detector has conditional severity, both branches are listed.
 
-**Severity:** critical
+### `after-teardown`
 
-Events that fire after their scope has ended. The classic React bug: calling `setState` after component unmount, or a `fetch().then()` resolving after the effect that started it has been torn down.
+**Severity:** `critical` if the late event is a render/setState-like event (label matches `render`, `update`, `display`, `show`, `paint`, or `setState`); otherwise `warning`.
 
-```
-[pulscheck] after-teardown (critical)
-  fetch:/api/user:done fired 120ms after UserProfile:scope-end
-  → src/UserProfile.tsx:14
-  Fix: Use useScopedEffect, or add an AbortController tied to the effect cleanup.
-```
-
-**Detection:** Builds a correlationId → teardown-beat index from `scope-end` events. Any event whose `parentId` is in the index and whose `beat` is after the teardown is reported.
-
-### response-reorder
-
-**Severity:** critical
-
-API responses arriving in a different order than their requests. The slow response overwrites the fast one. User sees wrong data.
+Events that fire after their scope has ended. The classic React bug: a `fetch().then(setState)` or `setTimeout(update, 100)` that fires after the component unmounts.
 
 ```
-[pulscheck] response-reorder (critical)
-  Responses for "fetch:/api/search" arrived out of request order
-  → src/hooks/useSearch.ts:20
-  Stale response was LAST to resolve — app is showing wrong data
-  Fix: Use an AbortController to cancel in-flight requests when a new one starts.
+⚠️ [WARNING] "setTimeout:fire" fired after "UserProfile:scope-end" (cid: 7a3c)
+   Pattern: after-teardown
+   Event "setTimeout:fire" at beat 1420.12 occurred 120.48ms after teardown
+   "UserProfile:scope-end" at beat 1299.64. This often means a callback, timer,
+   or subscription wasn't cleaned up before disposal.
+   Location: src/UserProfile.tsx:14
+   Fix: Add cleanup: clear timers, abort fetches (AbortController), unsubscribe
+        listeners in useEffect return. A ref guard prevents late setState.
 ```
 
-**Detection:** Normalizes fetch labels by collapsing dynamic segments (`/api/user/123` → `/api/user/:id`), groups request/response pairs by normalized endpoint, and compares request order vs response order. Generation-stamped so the analyzer can distinguish overlap (warning) from a stale response actually being the last write (critical).
+**Detection:** Group by correlationId, merge in events whose `parentId` matches, find the scope teardown event, and flag any event with a later `beat`. If a recovery event (`reconnect`, `retry`, `resume`, `restart`, `resubscribe`, `reattach`, `reopen`, `fallback`) is present, events at or after the recovery beat are excluded — reconnecting is the fix, not a bug.
 
-### double-trigger
+### `response-reorder`
 
-**Severity:** critical
+**Severity:** `critical` if `meta.generation` and `meta.latestGeneration` confirm the stale response was the last to resolve; otherwise `warning`.
 
-The same logical action fired twice within the collision window. Common causes: React Strict Mode, missing debounce, duplicate event handlers, double-submitted forms.
-
-```
-[pulscheck] double-trigger (critical)
-  fetch:/api/checkout:start fired 2x within 0.3ms
-  → src/CheckoutButton.tsx:42
-  Fix: Add a loading-state guard, or debounce the trigger.
-```
-
-**Detection:** Scans for events with identical normalized labels within the configured `windowMs` (default 16 ms).
-
-### dangling-async
-
-**Severity:** critical
-
-An operation started inside a scope but never reached a terminal state before the scope ended. A fetch with no response, a timer that was never cleared, a listener that was never removed — all inside a component that unmounted.
+API responses arriving in a different order than their requests. The slow response overwrites the fast one — the UI shows wrong data.
 
 ```
-[pulscheck] dangling-async (critical)
-  setInterval in "LiveChart" never cleared before scope-end
-  → src/LiveChart.tsx:18
-  Fix: Return a cleanup function from the effect that calls clearInterval.
+🛑 [CRITICAL] Stale response for "fetch:/api/search" resolved last — confirmed data corruption
+   Pattern: response-reorder
+   Requests were sent in order [cid-1, cid-2] but responses arrived as [cid-2, cid-1].
+   Generation tracking confirms the stale response (gen 1) resolved after the fresh one
+   (latest gen 2). Without cancellation, the UI now shows outdated data.
+   Location: src/hooks/useSearch.ts:20
+   Fix: CONFIRMED STALE: The oldest request resolved last — its data overwrote the
+        fresh result. Use AbortController to cancel superseded requests.
 ```
 
-**Detection:** Indexes pending `request` / `timer-start` / `listener-add` events by `parentId`. On every `scope-end`, the index is checked — any entry without a matching `response` / `timer-clear` / `listener-remove` before the teardown is dangling.
+**Detection:** Normalise fetch labels by collapsing dynamic segments (`/api/user/123` → `/api/user/:id`). Group request/response pairs by normalised endpoint and compare request order against response-arrival order. If the last response to resolve has `meta.generation < meta.latestGeneration`, escalate to `critical`.
 
-### sequence-gap
+### `double-trigger`
 
-**Severity:** warning
+**Severity:** `critical` if `meta` parameters are identical (internal keys `generation` / `latestGeneration` excluded); `info` if they differ.
 
-Missing steps in an ordered sequence. Typical with WebSocket streams where packets are dropped or arrive out of order.
-
-```
-[pulscheck] sequence-gap (warning)
-  ws:message sequence jumped from step 3 to step 5
-  Fix: Track last received sequence number and request replay of missed messages on reconnect.
-```
-
-**Detection:** Events carrying numeric `meta.step` are grouped by label base; consecutive integer gaps are flagged.
-
-### stale-overwrite
-
-**Severity:** warning
-
-A late response overwrites fresher data. The user sees correct data briefly, then it reverts.
+Two starts of the same normalised operation overlap — the second starts before the first's matching end.
 
 ```
-[pulscheck] stale-overwrite (warning)
-  prices:update overwrote newer data (stale by 800ms)
-  Fix: Compare response timestamps or sequence numbers before writing to state.
+🛑 [CRITICAL] "fetch:/api/checkout:start" triggered twice concurrently with same parameters
+   Pattern: double-trigger
+   Operation "fetch:/api/checkout:start" was started at beat 210.33 (cid: a1)
+   and again at beat 210.61 (cid: a2) before the first completed at beat 315.02.
+   Both have identical parameters — this often indicates a missing mutex,
+   debounce, or deduplication.
+   Location: src/CheckoutButton.tsx:42
+   Fix: Guard against duplicate triggers: check a loading flag, debounce,
+        or disable the trigger element until completion.
 ```
 
-**Detection:** Tracks writes to the same target and flags when an older response's write lands after a newer one has already been applied.
+**Detection:** Group start events by normalised label. For each adjacent pair, check whether the second starts before the first operation's matching end event. Generic timer labels (`setTimeout:start` / `setInterval:start`) only flag when the two starts share the same `parentId` scope or the same `callSite` — otherwise unrelated timers from Vite HMR or React internals produce spurious findings.
 
-### layout-thrash
+### `sequence-gap`
 
-**Severity:** warning (3+ cycles) / critical (5+ cycles)
+**Severity:** `critical`.
 
-Forced synchronous layout from repeated DOM write-then-read cycles within a single synchronous execution frame.
+A numbered message stream has missing entries.
 
 ```
-[pulscheck] layout-thrash (critical)
-  5 write-then-read cycles in 2ms frame (offsetWidth, offsetHeight)
-  → src/Tabs.tsx:88
-  Fix: Batch DOM reads and writes separately. Use requestAnimationFrame
-       to defer writes, or cache layout values with a WeakMap dirty-tracking pattern.
+🛑 [CRITICAL] Sequence gap in "ws:message": 1 missing between seq 3 and 5 (cid: ws-4a)
+   Pattern: sequence-gap
+   "ws:message" events with correlationId "ws-4a" have sequence numbers [1, 2, 3, 5, 6].
+   1 item(s) are missing between positions 3 and 5. This often indicates
+   dropped messages, lost events, or a reconnect gap.
+   Fix: Handle reconnection gaps: re-fetch missed data after WebSocket reconnect,
+        or request a replay of the missing sequence range from the server.
 ```
 
-**Detection:** Groups DOM writes and reads into synchronous frames (events within 4 ms). Counts write-then-read transitions where the read target was dirtied by a preceding write. Uses a WeakSet to track dirtied elements, avoiding false positives from reads on unmodified elements.
+**Detection:** Events carrying numeric `meta.seq` are grouped by `(correlationId, label)`, sorted by `seq`, and flagged on any consecutive integer gap.
 
-## printFindings(findings)
+**Note:** the `WebSocket` patch in `instrument()` does **not** currently stamp `meta.seq`. This detector only fires on manually instrumented traces and is not exercised by the current audit corpus.
 
-Pretty-print findings to the console with severity icons, colors, and call sites.
+### `stale-overwrite`
+
+**Severity:** `critical`.
+
+A render from an older request lands after a render from a newer request — the UI flips from correct back to stale.
+
+**Detection:** Collect render-like events, group by label base, and for each consecutive pair find the originating request event by correlationId. If the later render's request was sent *earlier* than the previous render's request, flag it.
+
+**Note:** render/state-write events are not emitted by any patch in `instrument()`. This detector only fires on manually instrumented traces that emit events with a render-like kind or label, and is not exercised by the current audit corpus.
+
+### `dangling-async`
+
+**Severity:** `warning`.
+
+An operation started inside a scope but never reached a terminal state before the scope ended.
+
+```
+⚠️ [WARNING] setInterval never completed before "LiveChart" tore down
+   Pattern: dangling-async
+   A setInterval operation with cid "tmr-9" started at beat 82.10 inside scope
+   "LiveChart" (cid: s-2), but the scope tore down at beat 450.44 without a
+   matching clearInterval. The interval is still firing.
+   Location: src/LiveChart.tsx:18
+   Fix: Return a cleanup function from the effect that calls clearInterval.
+```
+
+**Detection:** Build a correlationId → scope-teardown-beat map. For each operation-start with a `parentId` whose scope teared down, check whether any terminal event exists for that correlationId using per-operation-type rules:
+
+- `fetch` — needs `response` or `error`
+- `setTimeout` — needs `timer-end` or `timer-clear`
+- `setInterval` — needs `timer-clear` (ticks mean the interval is still running)
+- `addEventListener` — needs `listener-remove`
+- `WebSocket` — needs `response`, `close`, or `error`
+
+A label-suffix fallback (`:done`, `:cancel`, `:close`, `:unsubscribe`, …) covers manual pulses without an explicit `kind`.
+
+### `layout-thrash`
+
+**Severity:** `warning` at 3–4 cycles per frame; `critical` at 5 or more cycles per frame.
+
+Rapid DOM write→read cycles within a single synchronous frame. Each cycle forces the browser to recalculate layout synchronously.
+
+**Detection:** Collect events with `kind === "dom-write"` or `kind === "dom-read"`. Group them into frames using a 16 ms window (`FRAME_WINDOW_MS`). Inside each frame, count transitions where a `dom-write` is immediately followed by a `dom-read`. At least 3 cycles fire `warning`; 5 or more fire `critical`.
+
+**Note:** `instrument()` does not currently patch any forced-reflow DOM API (`getBoundingClientRect`, `offsetHeight`, style writes, …). This detector only fires on manually instrumented traces that emit `dom-write` / `dom-read` events and is not exercised by the current audit corpus.
+
+## `printFindings(findings)`
+
+Pretty-print findings to the console with severity icons and call sites.
 
 ```ts
 printFindings(findings)
 ```
 
-## fingerprint(finding)
+## `fingerprint(finding)`
 
-Return the dedup fingerprint for a finding — `${pattern}::${sorted call sites}`. Useful for building your own suppression layer.
+Return the dedup fingerprint for a finding. The format is:
+
+```
+{pattern}::{sortedLabels}           // no call site available
+{pattern}::{sortedLabels}::{callSite} // when any event has a call site
+```
+
+where `sortedLabels` is the finding's `events[*].label` array sorted and joined with commas. Useful for building your own suppression layer:
 
 ```ts
 import { fingerprint } from 'pulscheck'
@@ -180,31 +227,43 @@ if (!seen.has(key)) {
 }
 ```
 
-## createReporter(options?)
+## `createReporter(options?)`
 
-Create a reporter that runs `analyze()` on an interval with built-in deduplication.
+Create a reporter that runs `analyze()` on an interval and applies structural deduplication.
 
 ```ts
 const reporter = createReporter({
-  intervalMs: 5000,  // default: 5000
+  intervalMs: 5_000,       // default: 5000
+  minSeverity: 'warning',  // default: 'warning'
+  suppress: [],            // FindingPattern[], default: undefined
+  log: console.log,        // custom log sink
+  quiet: false,            // silence the startup banner
 })
 
 reporter.start()
 ```
 
-**Reporter methods**
+### `ReporterOptions`
+
+| Option | Default | Description |
+|---|---|---|
+| `intervalMs` | `5000` | Polling interval for the internal `analyze()` loop |
+| `minSeverity` | `'warning'` | Lowest severity the reporter surfaces (`info` findings are suppressed by default) |
+| `suppress` | `undefined` | Array of `FindingPattern` values to skip entirely |
+| `log` | `console.log` | Custom log sink — receives already-formatted strings |
+| `quiet` | `false` | Suppress the `[pulscheck] Reporter started` banner |
+
+### `Reporter` methods
 
 | Method | Description |
-|--------|-------------|
-| `start()` | Begin periodic analysis |
-| `stop()` | Stop periodic analysis |
-| `check()` | Run analysis once, return **new** findings only |
-| `reset()` | Clear dedup history |
+|---|---|
+| `start()` | Begin periodic analysis. Idempotent. |
+| `stop()` | Stop periodic analysis. Idempotent. |
+| `check()` | Run `analyze()` once and return the full `Finding[]` — does **not** apply reporter dedup. |
+| `reset()` | Clear the reporter's seen-fingerprint map. |
 
 ### Deduplication
 
-The reporter fingerprints each finding as `${pattern}::${sorted call sites}`. Only new fingerprints are logged. If the same race condition fires 1,000 times, you see it once — with the call sites that produced it.
+Each interval, the reporter fingerprints every finding from `analyze()`. New fingerprints are logged once; recurring fingerprints only increment a count and are suppressed from output. `check()` runs a single `analyze()` and bypasses the dedup map — use `reset()` followed by the next interval to re-surface known findings.
 
-The `check()` method returns only newly discovered findings since the last check. `reset()` wipes the dedup history so a subsequent `check()` returns everything the trace currently supports.
-
-`devMode()` wraps `createReporter().start()` for you — you rarely need to use `createReporter` directly.
+`devMode()` wraps `createReporter().start()` for you — you rarely need to use `createReporter` directly unless you want non-default `minSeverity`, a custom `log` sink, or programmatic `check()` access.

@@ -56,18 +56,19 @@ devMode()
 That's it. Open your browser console. PulsCheck reports race conditions as they happen:
 
 ```
-[pulscheck] response-reorder (critical)
-  Responses for "fetch:/api/search" arrived out of request order
-  → src/hooks/useSearch.ts:20
-  Stale response was LAST to resolve — app is showing wrong data
+🛑 [CRITICAL] Stale response for "fetch:/api/search" resolved last — confirmed data corruption
+   Pattern: response-reorder
+   Requests were sent in order [...] but responses arrived as [...].
+   Location: src/hooks/useSearch.ts:20
+   Fix: Use AbortController to cancel superseded requests.
 ```
 
 ## What `devMode()` does
 
 One call wires up three things:
 
-1. **Instruments** `fetch`, `setTimeout`, `setInterval`, `addEventListener`, `removeEventListener`, and `WebSocket`. Every call is recorded as a timestamped event with its source code location (extracted from stack traces).
-2. **Starts the reporter**, which runs all 7 detectors against the trace every 5 seconds and logs new findings.
+1. **Instruments** `fetch`, `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`, `addEventListener`, `removeEventListener`, and `WebSocket` — eight globals in total. Every call is recorded as a timestamped event with its source code location (extracted from `new Error().stack`). A `Symbol.for("tw.patched")` sentinel prevents double-patching across hot module replacement.
+2. **Starts the reporter**, which runs all seven detectors against the trace every 5 seconds (configurable) and logs newly seen findings. Recurring findings are deduplicated by `(pattern, sorted labels, call site)`.
 3. **Returns a cleanup function** that reverses every patch and stops the reporter. Call it during HMR dispose so hot reloads do not double-patch.
 
 ```ts
@@ -132,9 +133,16 @@ For scope-tracked effects, see [React Integration](/guide/react).
 
 ## Production
 
-PulsCheck is **dev-only by default**. The `devMode()` call is meant to be guarded by an `import.meta.env.DEV` or `process.env.NODE_ENV === 'development'` check — when that check evaluates to `false` at build time, modern bundlers (Vite, webpack, Next.js, esbuild) tree-shake the entire `pulscheck` import out of the bundle.
+PulsCheck is **dev-only by convention**, but the package does not strip itself — you must gate the call site:
 
-No runtime overhead. No bundle size impact.
+```ts
+if (import.meta.env.DEV) devMode()                        // Vite
+if (process.env.NODE_ENV === 'development') devMode()     // Webpack / Next.js / CRA
+```
+
+When the environment constant resolves to `false` at build time, modern bundlers (Vite, webpack, Next.js, esbuild) eliminate the guarded branch and tree-shake the `pulscheck` import out of the production bundle. The registry also internally no-ops when `process.env.NODE_ENV === 'production'` as a second line of defence, but the primary mechanism is the call-site gate.
+
+If you call `devMode()` unconditionally, it *will* run in production — patches apply, the reporter ticks, and the buffer fills. Always gate.
 
 ## Next steps
 

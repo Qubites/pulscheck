@@ -42,7 +42,7 @@ function App() {
 </TwProvider>
 ```
 
-The provider is inert in production builds — guard the import with `process.env.NODE_ENV === 'development'` if you want it gone at build time.
+`TwProvider` is **not** automatically production-gated. If you render it unconditionally in production, it will call `devMode()` and patch the eight globals. To keep it out of production, render it only when `process.env.NODE_ENV !== 'production'` (or the Vite equivalent), or import `TwProvider` dynamically behind that check.
 
 ## useScopedEffect
 
@@ -161,6 +161,14 @@ function CheckoutFlow() {
 }
 ```
 
-## Dev-only
+## Dev-only by convention
 
-Every React hook and `TwProvider` is guarded by the same dev-only build path as the rest of pulscheck. In production builds, they compile to no-ops (or are tree-shaken entirely) unless you explicitly set `public: true` on a pulse — which is rare and opt-in.
+None of the React hooks or `TwProvider` automatically disable themselves in production — they will run whatever JavaScript they contain. What *does* happen is that the underlying `registry.emit()` short-circuits when `process.env.NODE_ENV === 'production'` and the event is not marked `public`, so manual `usePulse` / `usePulseMount` calls become near no-ops in production. However, `TwProvider` still calls `devMode()`, which still applies the global patches — those happen regardless of NODE_ENV.
+
+To guarantee pulscheck code does not run in production, gate `TwProvider` and any direct `devMode()` call at the call site:
+
+```tsx
+{import.meta.env.DEV && <TwProvider>{children}</TwProvider>}
+```
+
+The bundler will then eliminate the entire subtree at build time.

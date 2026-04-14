@@ -41,12 +41,12 @@ Additional flags:
 | `--fail-on <level>` | `critical` | Exit 1 if findings at or above this severity exist |
 | `--format <type>` | `sarif` | Default is SARIF in CI mode |
 
-### `pulscheck report <file>`
+### `pulscheck help`
 
-Pretty-print a saved JSON or SARIF report:
+Print the usage summary:
 
 ```bash
-npx pulscheck report pulscheck.sarif
+npx pulscheck help
 ```
 
 ## Static patterns
@@ -91,26 +91,16 @@ jobs:
           fail-on: critical
 ```
 
-Inputs:
+Inputs (defaults read from `action/action.yml`):
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `path` | `src/` | Directory to scan |
-| `severity` | `warning` | Minimum severity to report |
-| `fail-on` | `critical` | Severity threshold for non-zero exit |
-| `format` | `sarif` | Output format |
+| `path` | `src` | Directory to scan |
+| `severity` | `warning` | Minimum severity to report (`info`, `warning`, `critical`) |
+| `fail-on` | `none` | Severity threshold for non-zero exit (`none`, `info`, `warning`, `critical`) |
+| `format` | `text` | Output format for the step summary (`text`, `json`, `sarif`) |
 
-SARIF uploads to GitHub code scanning automatically via `github/codeql-action/upload-sarif`:
-
-```yaml
-      - uses: Qubites/pulscheck/action@main
-        with:
-          path: src/
-          out: pulscheck.sarif
-      - uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: pulscheck.sarif
-```
+The composite action internally runs `pulscheck ci ... --format sarif --out pulscheck-results.sarif` and uploads that SARIF file to GitHub code scanning via `github/codeql-action/upload-sarif@v3`. You do not need to wire up the upload yourself — it happens inside the action. To fail the check on findings, set `fail-on` to `warning` or `critical` (it defaults to `none`, which means the action reports findings but never fails).
 
 ## Static vs runtime — when to use which
 
