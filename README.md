@@ -1,42 +1,100 @@
 # PulsCheck
 
-Runtime race condition detection for frontend apps. One function call, five bug patterns, zero config.
+[![CI](https://github.com/Qubites/pulscheck/actions/workflows/publish.yml/badge.svg)](https://github.com/Qubites/pulscheck/actions/workflows/publish.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![npm](https://img.shields.io/npm/v/pulscheck)](https://www.npmjs.com/package/pulscheck)
+
+Runtime race condition detection for frontend apps. One function call, seven detectors, zero config.
+
+**Validated on 77 real bugs from 71 open-source repos — 85.7% detection rate.** All tests use real `fetch`/`setTimeout`/`addEventListener` captured by `instrument()`. No hand-crafted events.
+
+## Install
+
+```bash
+npm install -D pulscheck
+```
+
+## Setup (pick your framework)
+
+### Vite / Vite + React
+
+```ts
+// main.ts (or main.tsx)
+import { devMode } from "pulscheck";
+
+if (import.meta.env.DEV) {
+  devMode();
+}
+```
+
+### Next.js (App Router)
+
+```tsx
+// app/providers.tsx
+"use client";
+import { devMode } from "pulscheck";
+
+if (process.env.NODE_ENV === "development") {
+  devMode();
+}
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  return <>{children}</>;
+}
+```
+
+### Create React App / Webpack
+
+```ts
+// src/index.tsx
+import { devMode } from "pulscheck";
+
+if (process.env.NODE_ENV === "development") {
+  devMode();
+}
+```
+
+### Any JS app (no framework)
+
+```ts
+import { devMode } from "pulscheck";
+devMode();
+```
+
+That's it. Open your browser console. PulsCheck reports race conditions as they happen:
 
 ```
-npm install pulscheck
+[PulsCheck] response-reorder (critical)
+  Responses for "fetch:/api/search" arrived out of request order
+  → src/hooks/useSearch.ts:20
+  Stale response was LAST to resolve — app is showing wrong data
 ```
 
 ## What it catches
+
+### Runtime detection (7 patterns)
 
 | Pattern | Example | Severity |
 |---------|---------|----------|
 | **after-teardown** | fetch completes after component unmounts | critical |
 | **response-reorder** | slow search response overwrites fast one | critical |
 | **double-trigger** | two identical fetches fire 0.3ms apart | critical |
+| **dangling-async** | operation started but never completed before teardown | critical |
 | **sequence-gap** | WebSocket messages arrive out of order | warning |
 | **stale-overwrite** | old response overwrites newer data | warning |
+| **layout-thrash** | repeated forced reflows in the same frame | warning |
 
-## Quick start (React)
+### Static analysis CLI (9 patterns)
 
-```tsx
-import { devMode } from "pulscheck";
-
-if (process.env.NODE_ENV === "development") {
-  devMode(); // instruments fetch, timers, events, WebSocket
-}
+```bash
+npx pulscheck scan src/
 ```
 
-That's it. Open your browser console — PulsCheck reports race conditions as they happen, with file:line for both sides of the conflict:
+Catches `fetch-no-abort-in-effect`, `setInterval-no-cleanup`, `setTimeout-in-effect-no-clear`, `state-update-in-then`, `async-onclick-no-guard`, and more.
 
-```
-[PulsCheck] response-reorder (critical)
-  Responses for "fetch:/api/search" arrived out of request order
-  → src/hooks/useSearch.ts:20
-  → src/hooks/useSearch.ts:20
-  Stale response was LAST to resolve — app is showing wrong data
-```
+## React integration (optional)
 
-## React Provider (alternative)
+### Provider
 
 ```tsx
 import { TwProvider } from "pulscheck/react";
@@ -50,7 +108,7 @@ function App() {
 }
 ```
 
-## Scoped Effects
+### Scoped Effects
 
 Drop-in `useEffect` replacement that tracks component lifecycle boundaries:
 
@@ -66,31 +124,13 @@ function UserProfile({ id }) {
 }
 ```
 
-If `fetch` completes after the component unmounts, PulsCheck flags it as `after-teardown`.
+## CI / GitHub Action
 
-## CLI Scanner (CI)
-
-Static analysis for race condition patterns in your source code:
+### CLI
 
 ```bash
-npx pulscheck scan src/
-```
-
-```
-PulsCheck v0.1.0 scanning src/...
-============================================================
-Found 3 patterns (1 critical, 2 warning, 0 info) in 4ms
-
-src/hooks/useData.ts (1 findings)
-  !! L12 [critical] fetch-no-abort-in-effect
-     fetch() inside useEffect without AbortController
-     Fix: const ctrl = new AbortController(); fetch(url, {signal: ctrl.signal}); return () => ctrl.abort();
-```
-
-### CI mode (SARIF for GitHub Code Scanning)
-
-```bash
-npx pulscheck ci src/ --fail-on critical
+npx pulscheck scan src/              # text output
+npx pulscheck ci src/ --fail-on critical  # SARIF + exit code
 ```
 
 ### GitHub Action
@@ -105,27 +145,18 @@ npx pulscheck ci src/ --fail-on critical
 
 ## How it works
 
-PulsCheck patches `fetch`, `setTimeout`, `setInterval`, `addEventListener`, and `WebSocket` at the global level. Each call is recorded as a timestamped event with its source code location (extracted from stack traces). Five heuristic detectors analyze the event stream:
+PulsCheck patches `fetch`, `setTimeout`, `setInterval`, `addEventListener`, `removeEventListener`, and `WebSocket` at the global level. Each call is recorded as a timestamped event with its source code location (extracted from stack traces). Seven heuristic detectors analyze the event stream every 5 seconds.
 
-1. **After-teardown** — async operation fires after its scope (React component) unmounted
-2. **Response-reorder** — responses arrive in different order than requests were sent
-3. **Double-trigger** — same operation fires twice before the first completes
-4. **Sequence-gap** — missing entries in sequential message streams
-5. **Stale-overwrite** — older response arrives after newer one to same endpoint
+Events are stored in a ring buffer (10k events, ~2MB, O(1) insertion). Findings are structurally deduplicated — one report per bug, not per occurrence.
 
-Per-endpoint **generation tracking** distinguishes "responses overlapped" (warning) from "stale data was last to resolve and the app consumed it" (critical).
-
-Events are stored in a **ring buffer** (10k events, ~2MB, O(1) insertion). The analyzer runs every 5 seconds. Findings are **structurally deduplicated** so you see each bug once, not once per occurrence.
-
-**Dev-only.** Zero production overhead. The `devMode()` call is tree-shaken in production builds.
+**Dev-only.** The `devMode()` call tree-shakes out of production builds. Zero runtime cost in production.
 
 ## API
 
 ### Runtime
 
 ```typescript
-import { devMode } from "pulscheck";
-import { instrument, restore, analyze, VERSION } from "pulscheck";
+import { devMode, instrument, restore, analyze, VERSION } from "pulscheck";
 ```
 
 | Function | Description |
@@ -133,10 +164,9 @@ import { instrument, restore, analyze, VERSION } from "pulscheck";
 | `devMode(opts?)` | One-line activation: instruments + starts reporter |
 | `instrument(opts?)` | Patch globals, returns cleanup function |
 | `restore()` | Remove all patches |
-| `analyze(events, opts?)` | Run detectors on an event array |
-| `VERSION` | Build-time version string |
+| `analyze(events)` | Run detectors on an event array |
 
-### React Hooks
+### React
 
 ```typescript
 import { TwProvider, useScopedEffect, usePulse, usePulseMount } from "pulscheck/react";
@@ -153,29 +183,19 @@ import { createTestHarness } from "pulscheck/testing";
 ```bash
 pulscheck scan [dir]           # Scan for patterns
 pulscheck ci [dir]             # CI mode (SARIF + exit code)
-pulscheck --version            # Print version
-pulscheck help                 # Show help
+pulscheck --version
 ```
 
 ## Why not React Query / SWR?
 
-React Query and SWR **prevent** race conditions by managing the request lifecycle. PulsCheck **detects** race conditions in code that doesn't use those libraries — or in code that uses them incorrectly.
+React Query and SWR **prevent** race conditions by managing the request lifecycle. PulsCheck **detects** race conditions in code that doesn't use those libraries — or in code that uses them incorrectly. If your whole app uses React Query correctly, you probably don't need PulsCheck.
 
-If your whole app uses React Query correctly, you probably don't need PulsCheck. If you have any raw `fetch()` calls, `setInterval` polling, WebSocket handlers, or event listeners — PulsCheck catches what those miss.
+## Support the project
 
-## What we've tested
+PulsCheck is free and open source. If it saved you debugging time or improved your product, consider supporting continued development:
 
-- **345 tests** across 20 test files
-- **80% detection rate** on 15 externally-sourced blind audit scenarios
-- **7/7 bugs caught** in live browser testing via Playwright injection
-- **3 → 0 findings** in before/after production app scan
-
-## What we don't know yet
-
-- False positive rate on large, real-world codebases (our tests were designed to have race conditions)
-- Whether findings actually save developer time vs just adding noise
-- How it behaves with React Query, SWR, or other request management libraries
-- Whether the CLI scanner is useful in CI or just annoying after the first run
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-GitHub-ea4aaa)](https://github.com/sponsors/Qubites)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-donate-yellow)](https://buymeacoffee.com/olivernordsve)
 
 ## License
 

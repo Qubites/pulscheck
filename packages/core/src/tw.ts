@@ -35,7 +35,7 @@ export const tw = {
   pulse(label: string, opts: PulseOptions = {}): PulseEvent {
     if (opts.sample !== undefined && Math.random() > opts.sample) {
       // Sampled out — return minimal stub (callers only need correlationId)
-      return { label, lane: opts.lane ?? "ui", beat: 0, ts: 0, public: false, dna: "", correlationId: opts.correlationId ?? uid(), source: opts.source ?? "manual" } as PulseEvent;
+      return { label, lane: opts.lane ?? "ui", beat: 0, ts: 0, public: false, correlationId: opts.correlationId ?? uid(), source: opts.source ?? "manual" } as PulseEvent;
     }
     const event = buildEvent(label, opts);
     registry.emit(event);

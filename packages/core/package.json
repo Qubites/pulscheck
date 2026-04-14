@@ -1,36 +1,50 @@
 {
   "name": "pulscheck",
   "version": "0.1.0",
-  "description": "Runtime race condition detection for frontend apps. One line of code, five bug patterns, zero config.",
+  "description": "Runtime race condition detection for frontend apps. One function call, seven detectors, zero config.",
   "keywords": [
     "race-condition",
     "async",
+    "concurrency",
     "debugging",
     "react",
     "frontend",
-    "tracing",
-    "pulse"
+    "runtime-analysis",
+    "layout-thrashing",
+    "stale-closure",
+    "developer-tools"
   ],
   "author": "Oliver Nordsve",
   "license": "Apache-2.0",
-  "main": "dist/index.cjs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Qubites/pulscheck.git"
+  },
+  "homepage": "https://github.com/Qubites/pulscheck",
+  "bugs": {
+    "url": "https://github.com/Qubites/pulscheck/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
-      "require": "./dist/index.cjs"
+      "require": "./dist/index.js"
     },
     "./react": {
       "types": "./dist/react.d.ts",
       "import": "./dist/react.mjs",
-      "require": "./dist/react.cjs"
+      "require": "./dist/react.js"
     },
     "./testing": {
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.mjs",
-      "require": "./dist/testing.cjs"
+      "require": "./dist/testing.js"
     }
   },
   "bin": {

@@ -29,7 +29,8 @@ export type FindingPattern =
   | "double-trigger"
   | "sequence-gap"
   | "stale-overwrite"
-  | "dangling-async";
+  | "dangling-async"
+  | "layout-thrash";
 
 export interface Finding {
   pattern: FindingPattern;
@@ -59,7 +60,7 @@ const RECOVERY_SIGNALS = [
   "reattach", "reopen", "fallback",
 ];
 
-const REQUEST_SIGNALS = ["request", "fetch", "call", "send", "query", "start"];
+const REQUEST_SIGNALS = ["request", "fetch", "call", "send", "query", "start", "subscribe"];
 const RESPONSE_SIGNALS = ["response", "result", "complete", "receive", "done", "end"];
 const RENDER_SIGNALS = ["render", "update", "display", "show", "paint", "setState"];
 
@@ -89,7 +90,7 @@ function normalizeFetchLabel(label: string): string {
   const suffix = parts.slice(2).join(":"); // "start" or "done"
 
   const normalized = path.replace(
-    /\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9]+|[0-9a-f]{24,})/gi,
+    /\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{24,}|(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{8,22}|[0-9]+)/gi,
     "/:id",
   );
   return `fetch:${normalized}:${suffix}`;
@@ -134,7 +135,10 @@ function isOperationEnd(e: PulseEvent): boolean {
     return e.kind === "response" || e.kind === "timer-end" || e.kind === "timer-clear"
       || e.kind === "timer-tick" || e.kind === "error" || e.kind === "listener-remove";
   }
-  return matchesAny(e.label, ["end", "complete", "response", "done", "fire", "clear", "tick"]);
+  return matchesAny(e.label, [
+    "end", "complete", "response", "done", "fire", "clear", "tick",
+    "cancel", "abort", "close", "stop", "finish", "resolve", "unsubscribe",
+  ]);
 }
 
 // ─── Pattern 1: After-teardown ───────────────────────────────────────
@@ -308,17 +312,24 @@ function detectDoubleTrigger(sorted: readonly PulseEvent[]): Finding[] {
   for (const [label, events] of byLabel) {
     if (events.length < 2) continue;
 
-    // Skip generic timer labels from auto-instrumentation — multiple independent
-    // timers are normal (Vite HMR, React internals, toast/debounce timers).
-    // Only flag timers with explicit user labels or fetch operations.
+    // Generic timer labels (setInterval:start, setTimeout:start) get special
+    // handling: multiple independent timers are normal (Vite HMR, React internals),
+    // so we only flag generic timers when they share the same scope (parentId)
+    // or same call site — that indicates a real double-mount, not unrelated timers.
     const isGenericTimer =
       label === "setTimeout:start" || label === "setInterval:start";
-    if (isGenericTimer) continue;
 
     // Check for overlapping: second starts before first's matching :end
     for (let i = 0; i < events.length - 1; i++) {
       const first = events[i];
       const second = events[i + 1];
+
+      // For generic timers, only flag if same scope OR same call site
+      if (isGenericTimer) {
+        const sameScope = first.parentId && first.parentId === second.parentId;
+        const sameSite = first.callSite && first.callSite === second.callSite;
+        if (!sameScope && !sameSite) continue;
+      }
 
       // Find the completion event for the first operation
       const firstEnd = sorted.find(
@@ -514,39 +525,54 @@ function metaEqual(
 function isDanglingResolved(
   start: PulseEvent,
   completionKinds: Map<string, Set<string>>,
+  completionLabelSuffixes: Map<string, Set<string>>,
 ): boolean {
   const kinds = completionKinds.get(start.correlationId);
-  if (!kinds) return false;
 
-  // Fetch
-  if (start.kind === "request" && start.label.startsWith("fetch:")) {
-    return kinds.has("response") || kinds.has("error");
+  // Kind-based checks (auto-instrumented events always set kind)
+  if (kinds) {
+    // Fetch
+    if (start.kind === "request" && start.label.startsWith("fetch:")) {
+      return kinds.has("response") || kinds.has("error");
+    }
+
+    // WebSocket handshake
+    if (start.kind === "request" && start.label.startsWith("ws:")) {
+      return kinds.has("response") || kinds.has("error") || kinds.has("close");
+    }
+
+    // setInterval — only clear counts (ticks mean it's still running = still leaking)
+    if (start.kind === "timer-start" && start.label.includes("setInterval")) {
+      return kinds.has("timer-clear");
+    }
+
+    // setTimeout — fire or clear
+    if (start.kind === "timer-start") {
+      return kinds.has("timer-end") || kinds.has("timer-clear");
+    }
+
+    // Event listener — needs explicit removeEventListener
+    if (start.kind === "listener-add") {
+      return kinds.has("listener-remove");
+    }
+
+    // Generic with kind — check standard completion kinds
+    if (kinds.has("response") || kinds.has("error")
+      || kinds.has("timer-end") || kinds.has("timer-clear")
+      || kinds.has("listener-remove") || kinds.has("close")) {
+      return true;
+    }
   }
 
-  // WebSocket handshake
-  if (start.kind === "request" && start.label.startsWith("ws:")) {
-    return kinds.has("response") || kinds.has("error") || kinds.has("close");
+  // Label-based fallback for manual pulses without explicit kind.
+  // If any event with the same correlationId has a completion-like label
+  // suffix (e.g., "task:done", "sub:cancel"), treat as resolved.
+  const suffixes = completionLabelSuffixes.get(start.correlationId);
+  if (suffixes && suffixes.size > 0) {
+    return true;
   }
 
-  // setInterval — only clear counts (ticks mean it's still running = still leaking)
-  if (start.kind === "timer-start" && start.label.includes("setInterval")) {
-    return kinds.has("timer-clear");
-  }
-
-  // setTimeout — fire or clear
-  if (start.kind === "timer-start") {
-    return kinds.has("timer-end") || kinds.has("timer-clear");
-  }
-
-  // Event listener — needs explicit removeEventListener
-  if (start.kind === "listener-add") {
-    return kinds.has("listener-remove");
-  }
-
-  // Generic manual start
-  return kinds.has("response") || kinds.has("error")
-    || kinds.has("timer-end") || kinds.has("timer-clear")
-    || kinds.has("listener-remove") || kinds.has("close");
+  return false;
 }
 
 function detectDanglingAsync(trace: readonly PulseEvent[]): Finding[] {
@@ -564,14 +590,34 @@ function detectDanglingAsync(trace: readonly PulseEvent[]): Finding[] {
 
   // 2. Index completion-like event kinds by correlationId (O(n) build, O(1) lookup)
   const completionKinds = new Map<string, Set<string>>();
+  // 2b. Also index labels for events WITHOUT kind — manual pulses use label conventions
+  const completionLabelSuffixes = new Map<string, Set<string>>();
+  const COMPLETION_SUFFIXES = [
+    "end", "done", "complete", "cancel", "abort", "close", "stop",
+    "finish", "clear", "remove", "error", "response", "resolve",
+    "unsubscribe", "disconnect",
+  ];
   for (const e of trace) {
-    if (!e.kind) continue;
-    let kinds = completionKinds.get(e.correlationId);
-    if (!kinds) {
-      kinds = new Set();
-      completionKinds.set(e.correlationId, kinds);
+    if (e.kind) {
+      let kinds = completionKinds.get(e.correlationId);
+      if (!kinds) {
+        kinds = new Set();
+        completionKinds.set(e.correlationId, kinds);
+      }
+      kinds.add(e.kind);
     }
-    kinds.add(e.kind);
+    // Label-based index: check if label ends with a completion-like suffix
+    // e.g., "task:cancel", "ws:close", "sub:unsubscribe"
+    const lower = e.label.toLowerCase();
+    const lastPart = lower.split(":").pop() ?? "";
+    if (COMPLETION_SUFFIXES.includes(lastPart)) {
+      let suffixes = completionLabelSuffixes.get(e.correlationId);
+      if (!suffixes) {
+        suffixes = new Set();
+        completionLabelSuffixes.set(e.correlationId, suffixes);
+      }
+      suffixes.add(lastPart);
+    }
   }
 
   // 3. Find start events whose parent scope tore down and that have no completion
@@ -587,7 +633,7 @@ function detectDanglingAsync(trace: readonly PulseEvent[]): Finding[] {
     if (e.beat >= teardownAt) continue;
 
     // Has a proper completion event? Not dangling.
-    if (isDanglingResolved(e, completionKinds)) continue;
+    if (isDanglingResolved(e, completionKinds, completionLabelSuffixes)) continue;
 
     const isInterval = e.label.includes("setInterval");
     const isTimer = e.kind === "timer-start";
@@ -623,6 +669,83 @@ function detectDanglingAsync(trace: readonly PulseEvent[]): Finding[] {
         : "Clean up the async operation in the useEffect return function.",
       events: [e],
       beatRange: [e.beat, teardownAt],
+    });
+  }
+
+  return findings;
+}
+
+// ─── Pattern 7: Layout Thrash ───────────────────────────────────────
+// Detects rapid DOM write→read cycles within a single synchronous frame.
+// Each cycle forces the browser to synchronously recalculate layout —
+// invisible on fast machines, catastrophic on phones.
+
+/** Max time (ms) between events to consider them in the same synchronous frame */
+const FRAME_WINDOW_MS = 16; // ~1 frame at 60fps
+/** Minimum write→read cycles to report */
+const THRASH_THRESHOLD = 3;
+
+function detectLayoutThrash(sorted: readonly PulseEvent[]): Finding[] {
+  const findings: Finding[] = [];
+
+  // Collect dom-write and dom-read events in chronological order
+  const domEvents = sorted.filter(
+    (e) => e.kind === "dom-write" || e.kind === "dom-read"
+  );
+  if (domEvents.length < THRASH_THRESHOLD * 2) return findings;
+
+  // Group into frames — events within FRAME_WINDOW_MS of each other
+  const frames: PulseEvent[][] = [];
+  let currentFrame: PulseEvent[] = [];
+
+  for (const e of domEvents) {
+    if (
+      currentFrame.length === 0 ||
+      e.beat - currentFrame[0].beat <= FRAME_WINDOW_MS
+    ) {
+      currentFrame.push(e);
+    } else {
+      frames.push(currentFrame);
+      currentFrame = [e];
+    }
+  }
+  if (currentFrame.length > 0) frames.push(currentFrame);
+
+  // Analyze each frame for write→read cycles
+  for (const frame of frames) {
+    let cycles = 0;
+    const properties = new Set<string>();
+    let lastWasDomWrite = false;
+
+    for (const e of frame) {
+      if (e.kind === "dom-write") {
+        lastWasDomWrite = true;
+      } else if (e.kind === "dom-read" && lastWasDomWrite) {
+        cycles++;
+        const prop = e.meta?.property;
+        if (typeof prop === "string") properties.add(prop);
+        lastWasDomWrite = false;
+      }
+    }
+
+    if (cycles < THRASH_THRESHOLD) continue;
+
+    const propList = [...properties].join(", ");
+    const severity: FindingSeverity = cycles >= 5 ? "critical" : "warning";
+
+    findings.push({
+      pattern: "layout-thrash",
+      severity,
+      summary: `${cycles} forced reflows in a single frame`,
+      detail: `Detected ${cycles} DOM write\u2192read cycles within ${FRAME_WINDOW_MS}ms. ` +
+        `Properties read: ${propList || "(unknown)"}. Each cycle forces the browser to ` +
+        `synchronously recalculate layout before returning the value. On mobile devices ` +
+        `this can block the main thread for tens of milliseconds per cycle.`,
+      fix: `Batch reads and writes separately. Read all values first, then apply writes. ` +
+        `Use a WeakMap cache for repeated reads, or use a scheduling library like fastdom ` +
+        `to automatically batch DOM operations.`,
+      events: frame,
+      beatRange: [frame[0].beat, frame[frame.length - 1].beat],
     });
   }
 
@@ -670,6 +793,7 @@ export function analyze(
     ["sequence-gap", () => detectSequenceGap(trace)],
     ["stale-overwrite", () => detectStaleOverwrite(sorted)],
     ["dangling-async", () => detectDanglingAsync(trace)],
+    ["layout-thrash", () => detectLayoutThrash(sorted)],
   ];
 
   const severityOrder: Record<FindingSeverity, number> = {

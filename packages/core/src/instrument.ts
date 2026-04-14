@@ -462,8 +462,10 @@ function captureCallSite(): string | undefined {
 
   const lines = stack.split("\n");
   for (const line of lines) {
-    // Skip pulscheck internals, node_modules, and empty lines
-    if (!line || line.includes("pulscheck") || line.includes("node_modules")) continue;
+    // Skip empty lines and node_modules
+    if (!line || line.includes("node_modules")) continue;
+    // Skip pulscheck internal source files (not the package name in paths)
+    if (line.includes("/dist/index.") || line.includes("/dist/react.") || line.includes("/dist/testing.")) continue;
     if (line.includes("instrument.ts") || line.includes("tw.ts") || line.includes("registry.ts")) continue;
     if (line.includes("devMode.ts") || line.includes("scope.ts") || line.includes("reporter.ts")) continue;
 

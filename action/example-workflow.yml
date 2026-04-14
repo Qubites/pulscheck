@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: Qubites/temporal-watcher/action@main
+      - uses: Qubites/pulscheck/action@main
         with:
           path: src              # Directory to scan
           severity: warning      # Minimum severity to report

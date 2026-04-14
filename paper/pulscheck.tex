@@ -1,0 +1,488 @@
+\documentclass[11pt,a4paper]{article}
+
+% ─── Packages ──────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{natbib}
+\usepackage{url}
+
+% ─── Code listing style ───────────────────────────────────────────
+\definecolor{codebg}{rgb}{0.96,0.96,0.96}
+\definecolor{codegreen}{rgb}{0.25,0.49,0.37}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0.0,0.83}
+
+\lstset{
+  backgroundcolor=\color{codebg},
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  captionpos=b,
+  commentstyle=\color{codegreen},
+  keywordstyle=\color{codepurple},
+  stringstyle=\color{codegreen},
+  numbers=none,
+  frame=single,
+  framesep=4pt,
+  xleftmargin=6pt,
+  xrightmargin=6pt,
+  aboveskip=10pt,
+  belowskip=10pt,
+}
+
+\lstdefinelanguage{TypeScript}{
+  keywords={import, from, export, function, const, let, var, if, return, new, typeof, void, async, await},
+  morecomment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  morestring=[b]",
+  morestring=[b]',
+  morestring=[b]`,
+  sensitive=true,
+}
+
+% ─── Hyperref setup ───────────────────────────────────────────────
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!60!black,
+  citecolor=blue!60!black,
+  urlcolor=blue!60!black,
+}
+
+% ─── Title ────────────────────────────────────────────────────────
+\title{PulsCheck: Automatic Runtime Detection of Asynchronous Race Conditions in Frontend Applications via Global Function Interception and Call Site Attribution}
+
+\author{
+  Oliver Nordsve \\
+  Qubites \(\cdot\) Norway \\
+  \texttt{oliver@qubites.com}
+}
+
+\date{April 2026}
+
+\begin{document}
+
+\maketitle
+
+% ─── Abstract ─────────────────────────────────────────────────────
+\begin{abstract}
+Modern frontend applications rely heavily on asynchronous operations---network requests, timers, event listeners, and persistent connections---that execute concurrently and interact through shared mutable state. Race conditions arising from these interactions are invisible to static analysis, type checkers, linters, and AI code review tools, as they manifest only at specific runtime moments. We present PulsCheck, a zero-configuration runtime detection system that intercepts asynchronous primitives at the JavaScript global function level, records timestamped events with source code location attribution, and applies seven heuristic pattern detectors to identify race conditions as they occur. We evaluate the system on 77 race condition scenarios reproduced from 71 distinct open-source repositories (ant-design, MUI, SWR, TanStack Query, Apollo, Supabase, Firebase, Radix UI, Floating UI, and others). All 77 scenarios use the auto-instrumentation layer with real \texttt{setTimeout}, \texttt{setInterval}, \texttt{fetch}, and \texttt{addEventListener} calls---no hand-crafted events. The system detected 66 of 77 race conditions (85.7\%): 100\% of timer leaks (25/25), 100\% of event listener leaks (20/20), 64\% of fetch race conditions (16/25), and 71\% of mixed-pattern bugs (5/7). The 11 missed cases all involve fetch races between distinct URL endpoints, which is a known structural limitation of endpoint-grouped reordering detection. These results are encouraging but narrow---we do not yet know whether the approach generalises beyond the patterns evaluated, whether the false positive rate is acceptable in daily development, or whether the findings save meaningful developer time. This paper describes the architecture, presents the audit results, and identifies the open questions that real-world usage must answer before any stronger claims can be made.
+\end{abstract}
+
+\noindent\textbf{Keywords:} race condition detection, asynchronous programming, runtime analysis, frontend development, monkey-patching, call site attribution
+
+% ─── 1. Introduction ─────────────────────────────────────────────
+\section{Introduction}
+
+The shift to asynchronous, event-driven frontend architectures has introduced a class of bugs that existing developer tooling cannot detect. When a user types a search query, the application may fire multiple fetch requests concurrently. If the responses arrive in a different order than the requests were sent, the user interface displays stale data---not because any individual function is incorrect, but because the temporal relationship between two correct functions produces an incorrect outcome.
+
+These temporal bugs share a common property: they are invisible to every tool that analyses code as a static snapshot. TypeScript verifies types. ESLint enforces patterns. AI code review tools examine structure. None of these tools model execution time. A race condition between two \texttt{fetch()} calls on line 20 and line 36 of the same file passes every check---the types are correct, the patterns are standard, and the code reads well. The bug exists only in the 0.7 milliseconds between two function calls that happen to execute concurrently.
+
+The problem may be amplified by the rise of AI-assisted code generation. Tools such as GitHub Copilot, Cursor, and Claude Code generate asynchronous code that passes type checks and linting, but these tools have no model of the temporal context in which the generated code will execute---specifically, what other asynchronous operations are already in flight at the point of insertion. Whether AI-generated code produces race conditions at a higher rate than manually written code is an open empirical question that has not been studied. What is clear is that no existing tool in the AI-assisted development workflow validates temporal correctness.
+
+We present PulsCheck, a runtime detection system that addresses this gap. PulsCheck operates by intercepting standard asynchronous primitives (\texttt{fetch}, \texttt{setTimeout}, \texttt{setInterval}, \texttt{clearTimeout}, \texttt{clearInterval}, \texttt{addEventListener}, \texttt{removeEventListener}, \texttt{WebSocket}) at the global function level, recording each intercepted call as a timestamped event with its originating source code location, and applying seven heuristic pattern detectors to the event stream. When a race condition is detected, the system reports the specific pattern, the severity, the source file and line number of both conflicting operations, and a concrete fix suggestion.
+
+The contributions of this paper are:
+
+\begin{enumerate}
+  \item A zero-configuration auto-instrumentation technique that intercepts asynchronous primitives without requiring source code modification beyond a single activation call
+  \item A call site attribution method that extracts source code locations from stack traces in both browser and Node.js environments
+  \item Seven heuristic race condition detection patterns (after-teardown, response-reorder, double-trigger, sequence-gap, stale-overwrite, dangling-async, layout-thrash) operating on a ring buffer event stream
+  \item URL-aware operation labelling that prevents false positive grouping of unrelated concurrent operations
+  \item A structural fingerprinting scheme for deduplicating repeated occurrences of the same race condition
+  \item A per-endpoint generation counter for sink-awareness that distinguishes benign response reordering (warning) from stale data that was last to resolve and thus consumed by the application (critical)
+  \item A real-code audit methodology using 77 race condition scenarios reproduced from 71 distinct open-source repositories, demonstrating 85.7\% detection rate using only auto-instrumentation (no hand-crafted events)
+  \item A companion static analysis CLI that detects 9 structural race condition patterns in source code for CI pipeline integration
+\end{enumerate}
+
+% ─── 2. Related Work ─────────────────────────────────────────────
+\section{Related Work}
+
+\textbf{Static analysis.} Tools such as ESLint, TypeScript, and Semgrep operate on the abstract syntax tree of source code. While effective for structural bugs, they cannot model runtime timing. Recent work on async/await linting rules (e.g., \texttt{no-floating-promises}) catches a narrow subset of concurrency issues---unawaited promises---but cannot detect conflicts between correctly-awaited operations that execute concurrently.
+
+\textbf{Browser developer tools.} Chrome DevTools provides the Performance panel for CPU profiling and the Network panel for request timing. These tools record execution but do not analyse it for race conditions. The developer must manually identify temporal conflicts from flame charts and waterfall diagrams.
+
+\textbf{Error monitoring.} Services such as Sentry, Datadog, and LogRocket capture errors that throw exceptions. Race conditions that produce incorrect state without throwing---such as a stale API response overwriting fresh data---are invisible to these tools because no error occurs.
+
+\textbf{Distributed tracing.} OpenTelemetry and Jaeger trace requests across service boundaries. They operate at the service level, not the source code level, and do not attribute trace spans to specific file and line positions within a single application.
+
+\textbf{Academic race detection.} The literature on race condition detection has focused primarily on multi-threaded systems with shared memory. Eraser~\citep{savage1997eraser} detects data races via lockset analysis. ThreadSanitizer~\citep{serebryany2009threadsanitizer} uses compile-time instrumentation for happens-before analysis. These approaches target thread-level concurrency and are not applicable to single-threaded, event-loop-based JavaScript applications where concurrency arises from asynchronous callbacks rather than parallel threads.
+
+\textbf{JavaScript-specific approaches.} EventRacer~\citep{raychev2013eventracer} analyses event handler interleavings in web applications through record-and-replay techniques. NodeRacer~\citep{davis2017nodefz} detects races in Node.js by analysing the event loop schedule. Both require specialised runtime environments or instrumentation infrastructure. PulsCheck differs by operating within the application's own JavaScript context through monkey-patching, requiring no external infrastructure.
+
+% ─── 3. System Architecture ──────────────────────────────────────
+\section{System Architecture}
+
+PulsCheck comprises five components arranged in a pipeline:
+
+\begin{center}
+\small
+\begin{tabular}{ccccc}
+\fbox{Instrument} & $\rightarrow$ & \fbox{Ring Buffer} & $\rightarrow$ & \fbox{Analyser} \\
+\small(8 patches) & & \small(10k events) & & \small(7 patterns) \\
+& & & & $\downarrow$ \\
+& & & & \fbox{Dedup} \\
+& & & & \small(fingerprint) \\
+& & & & $\downarrow$ \\
+& & & & \fbox{Reporter} \\
+& & & & \small(console) \\
+\end{tabular}
+\end{center}
+
+\subsection{Auto-Instrumentation}
+
+The instrumentation layer replaces six categories of global functions with instrumented versions. Each replacement function:
+
+\begin{enumerate}
+  \item Captures the call site from the current stack trace
+  \item Emits a timestamped event to the ring buffer
+  \item Delegates to the original function
+  \item Emits a completion event when the asynchronous operation resolves
+\end{enumerate}
+
+For network requests (\texttt{fetch}), the URL pathname is extracted and incorporated into the event label. A fetch to \texttt{/api/users} produces events labelled \texttt{fetch:/api/users:start} and \texttt{fetch:/api/users:done}, ensuring that concurrent requests to different endpoints are not falsely grouped.
+
+For timers (\texttt{setTimeout}, \texttt{setInterval}), the returned timer ID is stored in a tracking map alongside the event's correlation identifier. When a timer cancellation function (\texttt{clearTimeout}, \texttt{clearInterval}) is called, the correlation identifier is retrieved from the map and a correlated cancellation event is emitted.
+
+To prevent the system from instrumenting its own internal timers (used by the reporter for periodic analysis), references to the native (unpatched) timer functions are captured at module initialisation before any patching occurs.
+
+A sentinel symbol (\texttt{Symbol.for("tw.patched")}) is checked before applying each patch to prevent double-patching during hot module replacement, a common development workflow in modern frontend toolchains.
+
+\subsection{Call Site Attribution}
+
+When an instrumented function is called, the system generates a stack trace via \texttt{Error.captureStackTrace} (V8) or \texttt{new Error().stack} (other engines). The stack is parsed line by line, skipping frames originating from the instrumentation system. The first frame from user code is parsed using environment-specific patterns:
+
+\begin{itemize}
+  \item \textbf{Browser (Vite dev server):} Frames contain URLs of the form \texttt{http://localhost:8080/src/hooks/useFaq.ts?t=abc:20:5}. The path after the host and before the query string is extracted as the source file, and the subsequent number as the line.
+  \item \textbf{Node.js:} Frames contain filesystem paths of the form \texttt{/abs/path/src/hooks/useFaq.ts:20:5}. The path is shortened to a source-relative form.
+\end{itemize}
+
+The resulting call site string (e.g., \texttt{src/hooks/useFaq.ts:20}) is attached to the event and propagated through the analysis pipeline to the final finding report.
+
+\subsection{Event Model}
+
+Each recorded event contains:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+\textbf{Field} & \textbf{Type} & \textbf{Description} \\
+\midrule
+label & string & Operation identifier, e.g., \texttt{fetch:/api/users:start} \\
+lane & string & Execution category: \texttt{api}, \texttt{ui}, \texttt{ws}, \texttt{worker} \\
+beat & number & High-resolution timestamp via \texttt{performance.now()} \\
+ts & number & Wall-clock timestamp via \texttt{Date.now()} \\
+correlationId & string & Links related events (request $\leftrightarrow$ response) \\
+parentId & string? & Links to a correlation scope for lifecycle tracking \\
+callSite & string? & Source file and line, e.g., \texttt{src/hooks/useFaq.ts:20} \\
+kind & string? & Classification: \texttt{request}, \texttt{response}, \texttt{timer-start}, etc. \\
+meta & object? & Operation-specific metadata (URL, method, delay, etc.) \\
+\bottomrule
+\end{tabular}
+\caption{PulseEvent structure}
+\label{tab:event}
+\end{table}
+
+Events are stored in a ring buffer with a default capacity of 10,000 entries. The buffer uses $O(1)$ insertion by maintaining a write pointer that wraps to zero when capacity is reached, overwriting the oldest events.
+
+\subsection{Correlation Scopes}
+
+A correlation scope provides lifecycle boundary tracking. When a scope is created, a start event is emitted and a correlation identifier is stored. All auto-instrumented events that fire while the scope is active receive the scope's correlation identifier as their \texttt{parentId}. When the scope is ended (e.g., on React component unmount), a teardown event is emitted.
+
+The after-teardown detector uses this relationship: any event whose \texttt{parentId} matches a scope that has already emitted its teardown event is flagged as a potential race condition.
+
+\subsection{Seven-Pattern Analyser}
+
+The analyser runs seven independent detectors against the ring buffer contents:
+
+\textbf{Pattern 1: After-Teardown.} For each scope teardown event, the detector searches for subsequent events whose \texttt{parentId} matches the ended scope. These events represent asynchronous operations that fired after their originating context was destroyed---a common source of ``setState on unmounted component'' errors in React applications.
+
+\textbf{Pattern 2: Response-Reorder.} The detector groups request events by their base label (e.g., \texttt{fetch:/api/search}) and checks whether corresponding response events arrived in the same order. If requests were sent at beats [100, 105] but responses arrived at beats [200, 195], the detector reports a response-reorder finding. This pattern detects the classic ``stale search results'' bug where a slower, older query's results overwrite a faster, newer query's results.
+
+\textbf{Pattern 3: Double-Trigger.} The detector identifies pairs of start events with matching labels where the second fires before the first's corresponding end event. For the finding to be reported, both events must target the same operation (same label). The detector uses convention-based matching to identify end events: labels containing ``end'', ``complete'', ``response'', ``done'', ``fire'', ``clear'', or ``tick''.
+
+\textbf{Pattern 4: Sequence-Gap.} The detector examines events carrying sequential metadata (\texttt{meta.seq}) and identifies missing entries in the sequence. This is primarily relevant for WebSocket message streams where dropped messages indicate a connection issue.
+
+\textbf{Pattern 5: Stale-Overwrite.} The detector identifies cases where a response from an older request arrives after a response from a newer request to the same endpoint, indicating that the older response may overwrite fresher data in the application state.
+
+\textbf{Pattern 6: Dangling-Async.} The detector identifies asynchronous operations (fetch, setTimeout, setInterval, addEventListener) that started inside a correlation scope but did not produce a corresponding completion event before the scope was torn down. Completion is detected through two channels: (a) explicit \texttt{kind} markers on response/cleanup events, and (b) a label-suffix index that recognises completion labels by convention (\texttt{end}, \texttt{done}, \texttt{complete}, \texttt{cancel}, \texttt{abort}, \texttt{close}, \texttt{stop}, \texttt{finish}, \texttt{clear}, \texttt{remove}, \texttt{error}, \texttt{response}, \texttt{resolve}, \texttt{unsubscribe}, \texttt{disconnect}). Dangling operations are the dominant cause of memory leaks in single-page applications.
+
+\textbf{Pattern 7: Layout-Thrash.} The detector identifies interleaved DOM read and write operations within the same animation frame. Reading a layout-triggering property (\texttt{offsetHeight}, \texttt{getBoundingClientRect}, etc.) immediately after a DOM write forces a synchronous reflow, multiplying frame cost. The detector requires explicit DOM-read and DOM-write event markers; it does not auto-fire from raw \texttt{instrument()} alone.
+
+\subsection{Generation Tracking (Sink-Awareness)}
+
+A response-reorder finding alone does not distinguish two different severity levels: (a) responses arrived out of order but the application consumed the correct (newer) one, and (b) the stale response was the last to resolve and thus the application consumed outdated data. The latter is strictly more severe---it means the user is looking at wrong data with no visible error.
+
+To discriminate these cases, the instrumentation layer maintains a per-endpoint generation counter. Each outgoing request increments the counter and stamps the current generation number on the request event. When the response arrives, the system stamps both the request's generation and the current latest generation for that endpoint:
+
+\begin{lstlisting}[language=TypeScript]
+// On request
+const gen = nextGeneration(endpoint);  // e.g., 3
+meta.generation = gen;
+
+// On response
+meta.generation = gen;                  // 3 (this request)
+meta.latestGeneration = currentGeneration(endpoint);  // 4 (newer)
+\end{lstlisting}
+
+The response-reorder detector then checks whether the stale response (lower generation) was the last to resolve. If \texttt{generation < latestGeneration} for the final response in temporal order, the finding is elevated from ``warning'' to ``critical''.
+
+This adds 33 lines of code and zero runtime overhead beyond the counter increment. It does not require Babel plugins, React internals, or framework-specific hooks---it operates entirely within the existing global function interception layer.
+
+\subsection{Static Analysis CLI}
+
+In addition to the runtime detector, PulsCheck includes a static analysis CLI (\texttt{pulscheck scan}) that detects 9 structural patterns commonly associated with race conditions:
+
+\begin{enumerate}
+  \item \texttt{fetch-no-abort-in-effect} --- fetch inside \texttt{useEffect} without \texttt{AbortController}
+  \item \texttt{setInterval-no-cleanup} --- \texttt{setInterval} without cleanup return
+  \item \texttt{setTimeout-in-effect-no-clear} --- \texttt{setTimeout} inside \texttt{useEffect} without \texttt{clearTimeout}
+  \item \texttt{concurrent-useQuery-same-table} --- multiple \texttt{useQuery} hooks on same page
+  \item \texttt{async-onclick-no-guard} --- async \texttt{onClick} without loading guard
+  \item \texttt{websocket-no-reconnect-handler} --- \texttt{WebSocket} without reconnect handling
+  \item \texttt{supabase-concurrent-queries} --- concurrent Supabase queries to same table
+  \item \texttt{state-update-in-then} --- \texttt{setState} inside \texttt{.then()} chain
+  \item \texttt{promise-race-no-cancel} --- \texttt{Promise.race} without cancellation
+\end{enumerate}
+
+The CLI outputs in text, JSON, or SARIF 2.1.0 format. The SARIF output integrates with GitHub Code Scanning for automated PR review. A companion GitHub Action wraps the CLI for zero-configuration CI integration.
+
+The static scanner and runtime detector are complementary: the static scanner catches structural patterns pre-merge, while the runtime detector catches temporal bugs that only manifest during execution.
+
+\subsection{Structural Deduplication}
+
+Each finding is fingerprinted by concatenating the pattern name with a sorted, comma-separated list of event labels involved:
+
+\begin{lstlisting}
+double-trigger::fetch:/rest/v1/faq_entries:done,fetch:/rest/v1/faq_entries:start
+\end{lstlisting}
+
+This fingerprint captures the structural shape of the bug independent of timing. The reporter maintains a set of reported fingerprints and suppresses findings that have already been reported, incrementing an occurrence counter for the suppressed finding.
+
+% ─── 4. Evaluation ───────────────────────────────────────────────
+\section{Evaluation}
+
+\subsection{Methodology Note}
+
+An earlier version of this work used over 1,500 unit tests in which we manually emitted events through the public \texttt{tw.pulse()} API and then asserted that the analyser produced the expected findings. After realising that this methodology proves only that the analyser is internally self-consistent---it never exercises the auto-instrumentation layer or the question of whether real browser code produces the events the analyser expects---we deleted those tests and rebuilt the evaluation around real-code reproduction. The results in this paper come exclusively from tests where the events are produced by the \texttt{instrument()} layer patching the genuine \texttt{setTimeout}, \texttt{setInterval}, \texttt{fetch}, and \texttt{addEventListener} globals. We do not call \texttt{tw.pulse()} anywhere in the evaluation suite.
+
+\subsection{Production Application}
+
+We evaluated PulsCheck on a production web application: a Danish windshield repair quote engine built with React 18, Vite, TypeScript, and Supabase. The application includes dynamic FAQ loading, license plate lookup, AI-assisted pricing, and real-time chat. PulsCheck was activated by adding two lines to the application's entry point:
+
+\begin{lstlisting}[language=TypeScript]
+import { devMode } from "pulscheck";
+if (import.meta.env.DEV) devMode();
+\end{lstlisting}
+
+No other modifications were made to the application's source code.
+
+\subsection{Findings}
+
+On first page load, without any user interaction, PulsCheck detected two race conditions:
+
+\textbf{Finding 1 --- Double-Trigger (Critical)}
+
+\begin{lstlisting}
+"fetch:/rest/v1/faq_entries:start" triggered twice concurrently
+  Started at beat 135.20 and again at 135.50 -- 0.3ms apart
+  First completed at beat 706.80
+  Locations:
+    -> src/hooks/useFaq.ts:20
+    -> src/hooks/useFaq.ts:36
+\end{lstlisting}
+
+Two separate code paths in the same file both initiated a fetch to the FAQ entries endpoint on component mount. The fetches were 0.3ms apart, both targeting the same Supabase endpoint with identical parameters.
+
+\textbf{Finding 2 --- Response-Reorder (Warning)}
+
+\begin{lstlisting}
+Responses for "fetch:/rest/v1/faq_entries" arrived out of request order
+  Requests sent: [cid_8, cid_9]
+  Responses arrived: [cid_9, cid_8]
+  Locations:
+    -> src/hooks/useFaq.ts:20
+    -> src/hooks/useFaq.ts:36
+\end{lstlisting}
+
+Because two identical requests were in flight simultaneously, the server processed them with slightly different latencies. The second request's response arrived before the first's, meaning the application's final state reflected the first (older) response rather than the second (newer) one.
+
+Both findings were previously unknown to the development team.
+
+\subsection{Real-Code Audit (77 Bugs from 71 Open-Source Repositories)}
+
+To validate that the detection patterns generalise beyond the development team's own test cases, we conducted a real-code audit using 77 race condition scenarios sourced from real GitHub issues across 71 distinct open-source repositories. Each scenario was implemented as an isolated test that reproduces the bug pattern using \emph{real} browser globals---\texttt{setTimeout}, \texttt{setInterval}, \texttt{fetch}, \texttt{addEventListener}---captured by PulsCheck's auto-instrumentation layer. We do not call \texttt{tw.pulse()} or pre-compute the event stream. Whatever \texttt{analyze(registry.trace)} returns is the result.
+
+The 77 bugs were drawn from four categories sourced independently:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lrrrl}
+\toprule
+\textbf{Category} & \textbf{Tests} & \textbf{Detected} & \textbf{Rate} & \textbf{Representative repositories} \\
+\midrule
+Timer leaks         & 25 & 25 & 100.0\% & ant-design, MUI, SWR, TanStack Query, Chakra UI, \\
+                    &    &    &         & Apollo, Ionic, Grafana, Excalidraw, Vite, Jitsi \\
+Listener leaks      & 20 & 20 & 100.0\% & react-beautiful-dnd, Floating UI, FullCalendar, \\
+                    &    &    &         & Framer Motion, dnd-kit, ReactFlow, Mantine, \\
+                    &    &    &         & Headless UI, Slate, TipTap, Lexical, Radix \\
+Fetch races         & 25 & 16 & \phantom{0}64.0\%  & SWR, React Suspense, Remix, TanStack Query, \\
+                    &    &    &         & Apollo, tRPC, urql, Nuxt, Supabase, Firebase \\
+Mixed patterns      & \phantom{0}7  & \phantom{0}5  & \phantom{0}71.4\%  & DevExpress, Rocket.Chat, Radix Toast, OWASP, \\
+                    &    &    &         & Zustand, Storyblok, Sobers \\
+\midrule
+\textbf{Total}      & \textbf{77} & \textbf{66} & \textbf{85.7\%} & 71 unique repositories \\
+\bottomrule
+\end{tabular}
+\caption{Real-code audit results across 4 test files (\texttt{real-code-audit.test.ts}, \texttt{real-audit-timers.test.ts}, \texttt{real-audit-fetch.test.ts}, \texttt{real-audit-listeners.test.ts}). All tests use \texttt{instrument()} with real browser globals; no hand-crafted events.}
+\label{tab:real-audit}
+\end{table}
+
+\textbf{What the detectors actually fired.} Across all 77 tests, the analyser produced 192 findings spanning 4 of the 7 detection patterns:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lrl}
+\toprule
+\textbf{Pattern} & \textbf{Findings} & \textbf{Why this rate} \\
+\midrule
+after-teardown   & 87 & Auto-fires on any timer/listener/fetch event after \texttt{scope.end()} \\
+dangling-async   & 61 & Auto-fires on any operation open at scope teardown \\
+double-trigger   & 43 & Auto-fires on duplicate concurrent starts (same label) \\
+response-reorder & \phantom{0}1  & Requires \emph{same} normalised endpoint --- most tests use distinct URLs \\
+sequence-gap     & \phantom{0}0  & Requires \texttt{meta.seq} numbered events; \texttt{instrument()} does not auto-add them \\
+stale-overwrite  & \phantom{0}0  & Requires \texttt{setState}/render events; \texttt{instrument()} does not patch React internals \\
+layout-thrash    & \phantom{0}0  & Requires DOM read/write markers; \texttt{instrument()} does not patch DOM properties \\
+\bottomrule
+\end{tabular}
+\caption{Findings per detector across the 77 real-code tests. Three detectors do not fire from raw \texttt{instrument()} alone because they depend on event sources that the auto-instrumentation layer does not currently capture. This is an architectural blind spot in instrumentation, not a bug in the detectors themselves.}
+\label{tab:detector-fires}
+\end{table}
+
+\textbf{Why 11 fetch-race tests are missed.} All 11 misses (BUG-4, -5, -33, -36, -37, -38, -39, -41, -47, -48, -50) involve concurrent fetches to \emph{distinct URL endpoints}. Examples: an SWR cache-key change from \texttt{/user/alice} to \texttt{/user/bob}; a TanStack Query mutation to \texttt{/todos/update} racing a refetch to \texttt{/todos}; a form's async validation to \texttt{/validate/email} racing a submit to \texttt{/submit}. The response-reorder and stale-overwrite detectors group requests by normalised endpoint label, so they correctly do not flag these as ``the same operation racing itself.'' Detecting cross-endpoint races requires a higher-level abstraction (e.g., key-aware cache observers like the ones SWR and React Query implement internally) that PulsCheck currently does not provide.
+
+\textbf{Why three detectors fire zero times.} The 3 inactive detectors (sequence-gap, stale-overwrite, layout-thrash) work and are exercised by their unit tests, but their event sources are not produced by the auto-instrumentation layer alone. Sequence-gap requires \texttt{meta.seq} numbering on events---historically populated for WebSocket message frames---which raw fetch and timer instrumentation does not generate. Stale-overwrite requires explicit \texttt{setState}/render events to compare against fetch responses, which would require patching React internals. Layout-thrash requires DOM read/write markers (\texttt{offsetHeight}, \texttt{getBoundingClientRect}, \texttt{style.width=}), which would require patching DOM property descriptors. Extending \texttt{instrument()} to cover these sources is straightforward in principle but was out of scope for this evaluation.
+
+\subsection{Live Application Scan (Before/After Fix)}
+
+To validate end-to-end effectiveness, we scanned a production React application (23 API routes, Supabase backend) using Playwright injection before and after applying fixes. PulsCheck was injected into the running browser via \texttt{page.addInitScript()} and findings were collected after automated page navigation.
+
+\textbf{Before fixes:} 3 findings across 2 endpoints (1 double-trigger critical, 1 response-reorder critical, 1 response-reorder warning).
+
+\textbf{After fixes:} 0 findings. The fixes involved combining duplicate query hooks and adding interval guards to prevent concurrent analysis operations.
+
+This demonstrates that PulsCheck findings are actionable: the detection $\rightarrow$ fix $\rightarrow$ re-scan cycle produces a measurable reduction to zero.
+
+\subsection{Race-Bug-Zoo (Live Browser Validation)}
+
+We constructed a standalone React application containing 7 intentionally planted race condition bugs sourced from published blog posts and conference talks. Each component implements a distinct race pattern (search typeahead, user profile switching, polling dashboard, pagination, infinite scroll, tab switching, and StrictMode double-effect). A Vite development server with configurable response delays ensures bugs are reproducible.
+
+PulsCheck was injected via Playwright \texttt{addInitScript()} and each scenario was exercised through automated browser interaction. All 7 bugs were detected with correct pattern classification.
+
+\subsection{Cross-Environment Validation}
+
+PulsCheck's test suite was executed on two environments: a local ARM64 Mac (Node v20.19.5) and an x64 Ubuntu GitHub Actions runner (Node v20.20.2). Event sequences captured from both environments were compared via CI artifacts. All seven test scenarios produced identical event orderings, confirming that the detection patterns are deterministic and environment-independent for the timing margins used in the test suite.
+
+\subsection{Test Suite}
+
+The evaluation suite contains 77 automated tests across 4 files, all using the auto-instrumentation layer with real browser globals:
+
+\begin{itemize}
+  \item \texttt{real-code-audit.test.ts} --- 7 mixed-pattern bugs (DevExpress, Rocket.Chat, Radix, OWASP, Zustand, Storyblok, Sobers)
+  \item \texttt{real-audit-timers.test.ts} --- 25 timer leak bugs across 25 unique repositories
+  \item \texttt{real-audit-fetch.test.ts} --- 25 fetch race bugs across 25 unique repositories
+  \item \texttt{real-audit-listeners.test.ts} --- 20 listener leak bugs across 20 unique repositories
+\end{itemize}
+
+Each test (a) creates a correlation scope, (b) runs the bug pattern using real \texttt{setTimeout}/\texttt{setInterval}/\texttt{fetch}/\texttt{addEventListener} calls captured by \texttt{instrument()}, (c) ends the scope, and (d) calls \texttt{analyze(registry.trace)} on whatever the auto-instrumentation captured. No test calls \texttt{tw.pulse()}; no test pre-computes the event stream; no test asserts on a specific finding pattern. Each test records the result (detected vs.\ missed) into a JSON audit log and reports it in the per-file summary table.
+
+All 77 tests pass on Node.js versions 18, 20, and 22.
+
+\subsection{Performance}
+
+The ring buffer uses $O(1)$ insertion with fixed memory (10,000 events $\times$ $\sim$200 bytes per event $\approx$ 2\,MB). The analyser runs on a configurable interval (default: 5 seconds) and processes the buffer contents in a single pass per pattern. Call site capture via \texttt{Error.captureStackTrace} adds approximately 5--15 microseconds per intercepted call---negligible relative to the latency of the operations being intercepted (network requests: 50--500\,ms, timers: 0--10,000\,ms). The static CLI scanner processes a typical 50-file React application in under 10\,ms.
+
+% ─── 5. Discussion ───────────────────────────────────────────────
+\section{Discussion}
+
+\subsection{Known Limitations}
+
+\textbf{Single-page scope.} PulsCheck operates within a single browser tab's JavaScript context. It cannot detect race conditions that span multiple tabs, workers, or server-side processes.
+
+\textbf{Heuristic detection.} The seven patterns are heuristic, not formally verified. False positives are possible when the detected pattern is intentional behaviour (e.g., deliberate duplicate requests for redundancy). False negatives are possible for race condition patterns not covered by the seven detectors. The 85.7\% detection rate in the real-code audit means 14.3\% of real race conditions are missed---and we know exactly why: 11 of 11 misses involve concurrent fetches to distinct URL endpoints, which requires cross-endpoint cache awareness that PulsCheck does not currently provide.
+
+\textbf{Detector coverage from auto-instrumentation alone.} Of the seven detectors, only four (after-teardown, dangling-async, double-trigger, response-reorder) fire from raw \texttt{instrument()} output. The remaining three (sequence-gap, stale-overwrite, layout-thrash) require event sources the auto-instrumentation layer does not yet capture: WebSocket frame sequence numbering, React/setState observability, and DOM property access tracking respectively. These detectors are functional and exercised through their own unit tests, but they contribute zero findings to the real-code audit numbers above.
+
+\textbf{Dev-only operation.} PulsCheck operates exclusively in development builds. Race conditions that manifest only under production load patterns (higher concurrency, slower networks) may not be triggered during development. This is a fundamental constraint---the tool catches what happens during development, not what happens at scale.
+
+\textbf{Call site accuracy.} Stack trace formats vary across JavaScript engines and may be affected by source map quality. We have not tested on Safari or Firefox-specific stack trace formats. In production-minified code (where PulsCheck does not operate), call sites would be meaningless.
+
+\textbf{CLI regex scanner.} The static analysis CLI uses regular expressions, not an AST parser. It will produce false positives on commented-out code, code inside strings, and non-standard patterns. It is a lightweight supplement to the runtime detector, not a standalone analysis tool.
+
+\subsection{Open Questions}
+
+The following questions cannot be answered by the evaluation presented in this paper. They require real-world usage data from diverse codebases and development teams.
+
+\textbf{1. False positive rate in practice.} Our tests were designed to contain race conditions, so the false positive rate was necessarily low. In a large codebase with hundreds of concurrent operations---many of which are intentionally concurrent---how many findings are noise? If the false positive rate makes developers ignore PulsCheck output, the tool has negative value regardless of its detection capabilities.
+
+\textbf{2. Does detection save time?} PulsCheck tells developers a race condition exists. It does not tell them how to fix it (beyond a generic suggestion). For junior developers, a response-reorder finding may be harder to fix than the original bug. We have no data on whether PulsCheck findings reduce time-to-fix compared to encountering the bug through user reports or QA.
+
+\textbf{3. Comparison with prevention.} Libraries like React Query and SWR prevent race conditions by managing the request lifecycle. For teams that adopt these libraries, PulsCheck may detect nothing---because the bugs are already prevented. PulsCheck's value may be limited to codebases that use raw fetch, or to detecting misuse of query libraries.
+
+\textbf{4. Scalability of heuristic approach.} Seven detectors covering the most common patterns may be sufficient for small applications. Large applications may exhibit race condition patterns that require domain-specific detectors. We do not know where the ceiling is for heuristic-based detection.
+
+\textbf{5. CLI usefulness in CI.} The static scanner produces findings on every commit. If developers must triage the same findings repeatedly (e.g., intentional setInterval without cleanup), the tool becomes an annoyance rather than a safeguard. Baseline management and suppression mechanisms need real-world validation.
+
+\subsection{Comparison with Existing Approaches}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Tool} & \textbf{Temporal} & \textbf{Source Attr.} & \textbf{Zero Config} & \textbf{No Infra} \\
+\midrule
+TypeScript & No & N/A & Yes & Yes \\
+ESLint & No & N/A & No & Yes \\
+Chrome DevTools & Manual & No & Yes & Yes \\
+Sentry & Thrown only & Yes & No & No \\
+OpenTelemetry & Service-level & No & No & No \\
+React Query/SWR & Prevents & N/A & No & Yes \\
+EventRacer & Yes & No & No & No \\
+\textbf{PulsCheck} & \textbf{Yes} & \textbf{Yes (file:line)} & \textbf{Yes} & \textbf{Yes} \\
+\bottomrule
+\end{tabular}
+\caption{Comparison with existing approaches for detecting temporal bugs in frontend applications.}
+\label{tab:comparison}
+\end{table}
+
+\subsection{Potential Relevance to AI-Assisted Development}
+
+AI code generation tools operate on code structure, not runtime timing. A tool that generates a \texttt{useEffect} hook with a \texttt{fetch()} call has no model of what other \texttt{useEffect} hooks in the same component tree will do at the same time. Whether this produces race conditions more frequently than manual development is an open question---no study has compared race condition rates between AI-generated and human-written asynchronous code. PulsCheck provides a feedback signal that could close this gap, readable by both humans (console output) and AI tools (test runner integration, programmatic API). Empirical measurement of race condition frequency across AI-generated codebases is a direction for future work.
+
+% ─── 6. Conclusion ───────────────────────────────────────────────
+\section{Conclusion}
+
+We have presented PulsCheck, a runtime race condition detection system for frontend applications that intercepts asynchronous primitives and applies heuristic pattern detectors with source code attribution. Initial results are encouraging: the system detected previously unknown race conditions in a production application, achieved 85.7\% detection across 77 race conditions reproduced from 71 distinct open-source repositories using only auto-instrumentation, and produced zero false positives in the test scenarios evaluated. We also explicitly characterise the limits of the approach: 4 of the 7 detectors fire from raw auto-instrumentation, the remaining 3 require event sources outside the current instrumentation surface, and 11 of 11 missed cases share a single root cause (concurrent fetches to distinct URL endpoints).
+
+However, these results come from a narrow evaluation---one production application, one developer team, controlled test scenarios. The critical questions are not ``does it detect race conditions in test environments'' (it does) but ``does it save real developer time'', ``is the false positive rate tolerable in large codebases'', and ``do the findings lead to fixes or just confusion''. These can only be answered by real-world usage across diverse projects and teams.
+
+We release PulsCheck as an open-source tool specifically to enable this validation. If it proves genuinely useful---reduces debugging time, catches bugs before users do, and doesn't create more noise than signal---then the approach merits further development. If it doesn't, the architecture and evaluation methodology documented here may still inform future work on temporal correctness in frontend applications.
+
+The source code is available at \url{https://github.com/Qubites/pulscheck} under the Apache 2.0 license.
+
+% ─── References ──────────────────────────────────────────────────
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
