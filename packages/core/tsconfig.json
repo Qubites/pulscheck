@@ -11,11 +11,10 @@
     "declarationMap": true,
     "sourceMap": true,
     "outDir": "dist",
-    "rootDir": "src",
     "moduleResolution": "bundler",
     "isolatedModules": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "test-browser/**/*.ts"],
   "exclude": ["dist", "node_modules", "bench"]
 }

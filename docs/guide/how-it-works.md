@@ -118,7 +118,7 @@ In React, `useScopedEffect` automates this pattern — it opens a scope during `
 
 ## Detection patterns
 
-`analyze()` runs seven heuristic detectors against the sorted trace on every reporter tick (default interval 5,000 ms). Severity rules are lifted directly from `packages/core/src/analyze.ts`.
+`analyze()` runs four heuristic detectors against the sorted trace on every reporter tick (default interval 5,000 ms). Severity rules are lifted directly from `packages/core/src/analyze.ts`.
 
 ### 1. `after-teardown`
 
@@ -144,27 +144,7 @@ Two starts of the same normalised operation overlap (the second starts before th
 
 **How**: Group start events by normalised label. For each pair, check overlap against the first operation's end. Generic timer labels (`setTimeout:start`, `setInterval:start`) get special handling — they only flag when the two starts share the same `parentId` scope or the same `callSite`, because unrelated timers from Vite HMR and React internals are normal and should not produce findings. Parameter equality is computed on `meta`, excluding instrumentation-internal keys (`generation`, `latestGeneration`).
 
-### 4. `sequence-gap`
-
-**Severity:** `critical`.
-
-A numbered message stream has missing entries. Typical with WebSocket protocols that carry a sequence number per message.
-
-**How**: Events are grouped by `(correlationId, label)` and sorted by `meta.seq`. Consecutive integer gaps are flagged.
-
-**Auto-instrumentation note**: the `WebSocket` patch does **not** currently stamp `meta.seq`, so this detector only fires on manually instrumented traces. It is not exercised by the current audit corpus.
-
-### 5. `stale-overwrite`
-
-**Severity:** `critical`.
-
-A render from an older request lands after a render from a newer request — the UI flips from correct back to stale.
-
-**How**: Collect render-like events, group by label base, and for each consecutive pair find the originating request by correlationId. If the later render came from a request that was *sent earlier* than the previous render's request, flag it.
-
-**Auto-instrumentation note**: render/state-write events are not emitted by the fetch patch, so this detector requires manual `tw.pulse()` instrumentation that emits events with a render-like kind. It is not exercised by the current audit corpus.
-
-### 6. `dangling-async`
+### 4. `dangling-async`
 
 **Severity:** `warning`.
 
@@ -179,16 +159,6 @@ An operation started inside a scope but never reached a terminal state (response
 - `WebSocket` → needs `response`, `close`, or `error`
 
 If no matching completion exists and the operation started before the scope tore down, it's dangling. A label-suffix fallback (`:done`, `:cancel`, `:close`, etc.) applies to manual pulses without a `kind`.
-
-### 7. `layout-thrash`
-
-**Severity:** `warning` at 3–4 write→read cycles in one frame; `critical` at 5 or more.
-
-Rapid DOM write→read cycles within a single synchronous frame. Each cycle forces the browser to recalculate layout — invisible on fast machines, catastrophic on mobile.
-
-**How**: Collect events with `kind === "dom-write"` or `kind === "dom-read"`. Group into frames using a 16 ms window (`FRAME_WINDOW_MS`). Inside each frame, count write→read transitions. 3+ cycles fire a finding at `warning`, 5+ at `critical`.
-
-**Auto-instrumentation note**: `instrument()` does not currently patch `getBoundingClientRect`, `offsetHeight`, style writes, or any other forced-reflow-triggering API. This detector only fires on manually instrumented traces that emit `dom-write` / `dom-read` events. It is not exercised by the current audit corpus.
 
 ## Deduplication
 

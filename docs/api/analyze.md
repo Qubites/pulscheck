@@ -1,6 +1,6 @@
 # Analysis
 
-The analyzer runs seven heuristic detectors against a pulse trace and returns structured findings.
+The analyzer runs four heuristic detectors against a pulse trace and returns structured findings.
 
 ```ts
 import { analyze, printFindings, fingerprint, createReporter } from 'pulscheck'
@@ -33,13 +33,11 @@ Example:
 
 ```ts
 const findings = analyze(tw.trace, {
-  suppress: ['layout-thrash'],
+  suppress: ['dangling-async'],
   minSeverity: 'warning',
   filter: (f) => !f.events.some((e) => e.callSite?.includes('node_modules')),
 })
 ```
-
-`analyze()` does **not** accept a `windowMs` option — the layout-thrash frame window (16 ms) is a module-level constant inside `analyze.ts`, not a public parameter.
 
 **Returns:** `Finding[]`
 
@@ -64,10 +62,7 @@ type FindingPattern =
   | 'after-teardown'
   | 'response-reorder'
   | 'double-trigger'
-  | 'sequence-gap'
-  | 'stale-overwrite'
   | 'dangling-async'
-  | 'layout-thrash'
 ```
 
 ## Detection patterns
@@ -132,36 +127,6 @@ Two starts of the same normalised operation overlap — the second starts before
 
 **Detection:** Group start events by normalised label. For each adjacent pair, check whether the second starts before the first operation's matching end event. Generic timer labels (`setTimeout:start` / `setInterval:start`) only flag when the two starts share the same `parentId` scope or the same `callSite` — otherwise unrelated timers from Vite HMR or React internals produce spurious findings.
 
-### `sequence-gap`
-
-**Severity:** `critical`.
-
-A numbered message stream has missing entries.
-
-```
-🛑 [CRITICAL] Sequence gap in "ws:message": 1 missing between seq 3 and 5 (cid: ws-4a)
-   Pattern: sequence-gap
-   "ws:message" events with correlationId "ws-4a" have sequence numbers [1, 2, 3, 5, 6].
-   1 item(s) are missing between positions 3 and 5. This often indicates
-   dropped messages, lost events, or a reconnect gap.
-   Fix: Handle reconnection gaps: re-fetch missed data after WebSocket reconnect,
-        or request a replay of the missing sequence range from the server.
-```
-
-**Detection:** Events carrying numeric `meta.seq` are grouped by `(correlationId, label)`, sorted by `seq`, and flagged on any consecutive integer gap.
-
-**Note:** the `WebSocket` patch in `instrument()` does **not** currently stamp `meta.seq`. This detector only fires on manually instrumented traces and is not exercised by the current audit corpus.
-
-### `stale-overwrite`
-
-**Severity:** `critical`.
-
-A render from an older request lands after a render from a newer request — the UI flips from correct back to stale.
-
-**Detection:** Collect render-like events, group by label base, and for each consecutive pair find the originating request event by correlationId. If the later render's request was sent *earlier* than the previous render's request, flag it.
-
-**Note:** render/state-write events are not emitted by any patch in `instrument()`. This detector only fires on manually instrumented traces that emit events with a render-like kind or label, and is not exercised by the current audit corpus.
-
 ### `dangling-async`
 
 **Severity:** `warning`.
@@ -187,16 +152,6 @@ An operation started inside a scope but never reached a terminal state before th
 - `WebSocket` — needs `response`, `close`, or `error`
 
 A label-suffix fallback (`:done`, `:cancel`, `:close`, `:unsubscribe`, …) covers manual pulses without an explicit `kind`.
-
-### `layout-thrash`
-
-**Severity:** `warning` at 3–4 cycles per frame; `critical` at 5 or more cycles per frame.
-
-Rapid DOM write→read cycles within a single synchronous frame. Each cycle forces the browser to recalculate layout synchronously.
-
-**Detection:** Collect events with `kind === "dom-write"` or `kind === "dom-read"`. Group them into frames using a 16 ms window (`FRAME_WINDOW_MS`). Inside each frame, count transitions where a `dom-write` is immediately followed by a `dom-read`. At least 3 cycles fire `warning`; 5 or more fire `critical`.
-
-**Note:** `instrument()` does not currently patch any forced-reflow DOM API (`getBoundingClientRect`, `offsetHeight`, style writes, …). This detector only fires on manually instrumented traces that emit `dom-write` / `dom-read` events and is not exercised by the current audit corpus.
 
 ## `printFindings(findings)`
 

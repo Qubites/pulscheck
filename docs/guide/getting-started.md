@@ -68,7 +68,7 @@ That's it. Open your browser console. PulsCheck reports race conditions as they 
 One call wires up three things:
 
 1. **Instruments** `fetch`, `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`, `addEventListener`, `removeEventListener`, and `WebSocket` — eight globals in total. Every call is recorded as a timestamped event with its source code location (extracted from `new Error().stack`). A `Symbol.for("tw.patched")` sentinel prevents double-patching across hot module replacement.
-2. **Starts the reporter**, which runs all seven detectors against the trace every 5 seconds (configurable) and logs newly seen findings. Recurring findings are deduplicated by `(pattern, sorted labels, call site)`.
+2. **Starts the reporter**, which runs all four detectors against the trace every 5 seconds (configurable) and logs newly seen findings. Recurring findings are deduplicated by `(pattern, sorted labels, call site)`.
 3. **Returns a cleanup function** that reverses every patch and stops the reporter. Call it during HMR dispose so hot reloads do not double-patch.
 
 ```ts

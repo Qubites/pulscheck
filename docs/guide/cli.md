@@ -49,27 +49,21 @@ Print the usage summary:
 npx pulscheck help
 ```
 
-## Static patterns
+## Static rule
 
-The CLI runs 9 source-level detectors. Each one is a regex-based rule mapped to one of the runtime detection patterns, with a concrete fix suggestion.
+The CLI ships a single AST-based rule. It's deliberately narrow — the rules for `setTimeout`, `setInterval`, and `addEventListener` leaks already live in [`@eslint-react/eslint-plugin`](https://www.npmjs.com/package/@eslint-react/eslint-plugin) (`no-leaked-timeout`, `no-leaked-interval`, `no-leaked-event-listener`), and we don't duplicate them.
 
 | Rule | Severity | Maps to | What it catches |
 |------|----------|---------|-----------------|
-| `fetch-no-abort-in-effect` | critical | after-teardown | `fetch()` inside `useEffect` without `AbortController` |
-| `setInterval-no-cleanup` | warning | after-teardown | `setInterval` with no `clearInterval` in cleanup |
-| `setTimeout-in-effect-no-clear` | warning | after-teardown | `setTimeout` inside `useEffect` with no `clearTimeout` |
-| `state-update-in-then` | warning | after-teardown | `setState` inside `.then()` — may update unmounted component |
-| `async-onclick-no-guard` | warning | double-trigger | Async `onClick` without a loading guard — rapid clicks race |
-| `concurrent-useQuery-same-table` | info | double-trigger | Multiple `useQuery` hooks on the same key |
-| `supabase-concurrent-queries` | info | double-trigger | Concurrent Supabase queries to the same table |
-| `websocket-no-reconnect-handler` | info | sequence-gap | `new WebSocket()` — ordering gaps possible on reconnect |
-| `promise-race-no-cancel` | info | stale-overwrite | `Promise.race` without cancelling losing promises |
+| `fetch-no-abort-in-effect` | critical | after-teardown | `fetch()` inside `useEffect` / `useLayoutEffect` / `useInsertionEffect` without an `AbortController` wired into cleanup |
+
+The rule is cleanup-aware: if the effect's return function calls `ctrl.abort()` on the controller that was passed to `fetch(url, { signal })`, it doesn't flag. It also walks nested closures, so a `fetch` inside a helper called from the effect body is still caught.
 
 Each finding includes the file, line, matched code, severity, and a fix string.
 
-## GitHub Action
+## Use in CI
 
-A prebuilt Action is available in the `action/` directory of this repo. Wire it into your workflow:
+Drop the binary straight into a GitHub Actions job — no wrapper action is needed:
 
 ```yaml
 name: PulsCheck
@@ -84,31 +78,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: Qubites/pulscheck/action@main
+      - uses: actions/setup-node@v4
         with:
-          path: src/
-          severity: warning
-          fail-on: critical
+          node-version: 20
+      - run: npx -y pulscheck ci src/ --fail-on critical --out pulscheck.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: pulscheck.sarif
 ```
 
-Inputs (defaults read from `action/action.yml`):
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `path` | `src` | Directory to scan |
-| `severity` | `warning` | Minimum severity to report (`info`, `warning`, `critical`) |
-| `fail-on` | `none` | Severity threshold for non-zero exit (`none`, `info`, `warning`, `critical`) |
-| `format` | `text` | Output format for the step summary (`text`, `json`, `sarif`) |
-
-The composite action internally runs `pulscheck ci ... --format sarif --out pulscheck-results.sarif` and uploads that SARIF file to GitHub code scanning via `github/codeql-action/upload-sarif@v3`. You do not need to wire up the upload yourself — it happens inside the action. To fail the check on findings, set `fail-on` to `warning` or `critical` (it defaults to `none`, which means the action reports findings but never fails).
+SARIF output uploads cleanly to GitHub code scanning, so findings show up inline on pull requests.
 
 ## Static vs runtime — when to use which
 
-The static CLI catches patterns **before** they ship. The runtime detector (`devMode()`) catches bugs **as they happen** and has access to real timing, real call graphs, and real data. Use both:
+The static CLI catches the one pattern it covers **before** code ships. The runtime detector (`devMode()`) catches four patterns **as they happen**, with access to real timing, real call graphs, and real data. Use both — plus an ESLint config with `@eslint-react/eslint-plugin` for the timer/listener rules we don't ship:
 
 | Layer | Strengths | Blind spots |
 |-------|-----------|-------------|
-| Static (CLI) | Fast, runs in CI, no runtime needed | Can't see async timing, can't see dynamic data |
+| Static (CLI) | Fast, runs in CI, no runtime needed | Only covers `fetch`-in-effect; can't see async timing or dynamic data |
 | Runtime (`devMode`) | Real traces, real bugs, structured findings | Only finds what you actually execute |
 
-Treat the CLI as the first wall of defense and `devMode()` as the one that catches everything the first wall missed.
+Treat the CLI as one wall of defence and `devMode()` as the one that catches what the first wall missed.

@@ -2,7 +2,7 @@ import { defineConfig } from 'vitepress'
 
 export default defineConfig({
   title: 'PulsCheck',
-  description: 'Runtime race condition detection for frontend apps. One function call, seven detectors, zero config.',
+  description: 'Runtime race condition detection for frontend apps. One function call, four detectors, zero config.',
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }],
   ],
@@ -38,7 +38,7 @@ export default defineConfig({
       {
         text: 'Research',
         items: [
-          { text: 'Paper & Validation', link: '/research' },
+          { text: 'Research & Validation', link: '/research' },
         ],
       },
     ],

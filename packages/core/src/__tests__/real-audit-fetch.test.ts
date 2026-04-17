@@ -9,7 +9,7 @@
  *   - Fetch resolves after component unmount (after-teardown)
  *   - Responses arrive out of order (response-reorder)
  *   - Duplicate concurrent fetches to same endpoint (double-trigger)
- *   - No AbortController — stale data overwrites fresh (stale-overwrite)
+ *   - No AbortController — fetch not aborted on teardown (after-teardown)
  *   - Dangling fetch never completed before teardown (dangling-async)
  */
 import { describe, it, expect, beforeEach, afterEach, afterAll } from "vitest";

@@ -5,7 +5,6 @@
  * Commands:
  *   pulscheck scan [dir]     — Scan source files for race condition patterns
  *   pulscheck ci [dir]       — CI mode: scan + SARIF output + exit code on findings
- *   pulscheck report [json]  — Pretty-print a scan result JSON file
  *
  * Options:
  *   --format json|sarif|text   Output format (default: text, ci default: sarif)
@@ -14,97 +13,17 @@
  *   --fail-on <level>          Exit 1 if findings at this severity: info|warning|critical (default: critical)
  *   --ignore <pattern>         Glob pattern to ignore (repeatable)
  *   --quiet                    Suppress progress output
+ *
+ * What this scans: `fetch()` calls inside React `useEffect`/`useLayoutEffect`/
+ * `useInsertionEffect` bodies that aren't wired up to an AbortController. That
+ * is the one static rule we still ship here; the timer and event-listener
+ * siblings live in `@eslint-react/eslint-plugin` and we don't duplicate them.
  */
 
 import * as fs from "fs";
 import * as path from "path";
 import { VERSION } from "./version";
-
-// ─── Pattern definitions ────────────────────────────────────────────
-
-interface PatternDef {
-  name: string;
-  regex: RegExp;
-  risk: string;
-  severity: "critical" | "warning" | "info";
-  detector: string;
-  fix: string;
-}
-
-const PATTERNS: PatternDef[] = [
-  {
-    name: "fetch-no-abort-in-effect",
-    regex: /useEffect\s*\(\s*(?:async\s*)?\(\)\s*=>\s*\{[^}]*fetch\s*\([^}]*\}/gs,
-    risk: "fetch() inside useEffect without AbortController — response may arrive after unmount",
-    severity: "critical",
-    detector: "after-teardown",
-    fix: "Add AbortController: const ctrl = new AbortController(); fetch(url, {signal: ctrl.signal}); return () => ctrl.abort();",
-  },
-  {
-    name: "setInterval-no-cleanup",
-    regex: /setInterval\s*\([^)]*\)/g,
-    risk: "setInterval without cleanup — interval leaks on unmount",
-    severity: "warning",
-    detector: "after-teardown",
-    fix: "Store interval ID and clear in useEffect cleanup: return () => clearInterval(id);",
-  },
-  {
-    name: "setTimeout-in-effect-no-clear",
-    regex: /useEffect\s*\(\s*(?:async\s*)?\(\)\s*=>\s*\{[^}]*setTimeout\s*\([^}]*\}/gs,
-    risk: "setTimeout inside useEffect without clearTimeout — may fire after unmount",
-    severity: "warning",
-    detector: "after-teardown",
-    fix: "Store timeout ID and clear in useEffect cleanup: return () => clearTimeout(id);",
-  },
-  {
-    name: "concurrent-useQuery-same-table",
-    regex: /useQuery\s*\(\s*\{[^}]*queryKey\s*:\s*\[[^\]]*\]/g,
-    risk: "useQuery hook — multiple hooks on same page may cause concurrent fetches to same endpoint",
-    severity: "info",
-    detector: "double-trigger",
-    fix: "Consider combining queries or using select() to derive data from a single query.",
-  },
-  {
-    name: "async-onclick-no-guard",
-    regex: /onClick\s*=\s*\{?\s*(?:async\s*)?\(\s*\)\s*=>\s*\{[^}]*(?:fetch|await)/gs,
-    risk: "Async onClick without loading guard — rapid clicks trigger concurrent operations",
-    severity: "warning",
-    detector: "double-trigger",
-    fix: "Add loading state guard: if (loading) return; setLoading(true); try { ... } finally { setLoading(false); }",
-  },
-  {
-    name: "websocket-no-reconnect-handler",
-    regex: /new\s+WebSocket\s*\(/g,
-    risk: "WebSocket connection — message ordering gaps possible on reconnect",
-    severity: "info",
-    detector: "sequence-gap",
-    fix: "Track last received sequence number and request replay of missed messages on reconnect.",
-  },
-  {
-    name: "supabase-concurrent-queries",
-    regex: /supabase\s*\.\s*from\s*\(\s*['"]([^'"]+)['"]\s*\)\s*\.\s*select/g,
-    risk: "Supabase query — concurrent queries to same table may race",
-    severity: "info",
-    detector: "double-trigger",
-    fix: "Combine multiple queries to same table into a single query with .or() or broader select.",
-  },
-  {
-    name: "state-update-in-then",
-    regex: /\.then\s*\(\s*(?:\([^)]*\)|[a-zA-Z_$]+)\s*=>\s*\{?\s*set[A-Z]\w*\s*\(/g,
-    risk: "setState inside .then() — may update unmounted component",
-    severity: "warning",
-    detector: "after-teardown",
-    fix: "Use async/await with a mounted ref check, or AbortController to cancel the fetch on unmount.",
-  },
-  {
-    name: "promise-race-no-cancel",
-    regex: /Promise\.race\s*\(\s*\[/g,
-    risk: "Promise.race without cancellation — losing promises still run and may cause side effects",
-    severity: "info",
-    detector: "stale-overwrite",
-    fix: "Cancel losing promises via AbortController or a boolean flag after the race resolves.",
-  },
-];
+import { scanSourceAst } from "./ast-scanner";
 
 // ─── File scanner ───────────────────────────────────────────────────
 
@@ -119,38 +38,75 @@ interface ScanMatch {
   code: string;
 }
 
+/** SARIF rule catalog — one entry per rule the AST scanner can emit.
+ *  Kept in sync with ast-scanner.ts's DANGER_RULES by hand; the list is
+ *  small enough that a build-time coupling isn't worth it. */
+const SARIF_RULES = [
+  {
+    id: "fetch-no-abort-in-effect",
+    risk: "fetch() inside useEffect without AbortController — response may arrive after unmount",
+    severity: "critical" as const,
+    fix: "Use AbortController: const ctrl = new AbortController(); fetch(url, { signal: ctrl.signal }); return () => ctrl.abort();",
+  },
+];
+
 function scanFile(filePath: string, rootDir: string): ScanMatch[] {
   const content = fs.readFileSync(filePath, "utf-8");
-  const lines = content.split("\n");
   const matches: ScanMatch[] = [];
-  const relPath = path.relative(rootDir, filePath);
+  const relPath = path.relative(rootDir, filePath) || path.basename(filePath);
 
-  for (const pattern of PATTERNS) {
-    const regex = new RegExp(pattern.regex.source, pattern.regex.flags);
-    let match: RegExpExecArray | null;
-    while ((match = regex.exec(content)) !== null) {
-      const lineNum = content.slice(0, match.index).split("\n").length;
+  // AST pass — authoritative for useEffect cleanup bugs. Handles nested
+  // closures and cleanup-awareness, which regex cannot.
+  try {
+    const astFindings = scanSourceAst(filePath, content);
+    for (const f of astFindings) {
       matches.push({
-        rule: pattern.name,
-        risk: pattern.risk,
-        severity: pattern.severity,
-        detector: pattern.detector,
-        fix: pattern.fix,
+        rule: f.rule,
+        risk: f.risk,
+        severity: f.severity,
+        detector: f.detector,
+        fix: f.fix,
         file: relPath,
-        line: lineNum,
-        code: (lines[lineNum - 1] ?? "").trim().slice(0, 120),
+        line: f.line,
+        code: f.code,
       });
     }
+  } catch {
+    /* AST parse failure — skip this file silently. */
   }
+
   return matches;
 }
 
+const SKIP_DIRS = new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  "build",
+  "out",
+  ".next",
+  ".nuxt",
+  ".output",
+  ".cache",
+  "cache",
+  ".parcel-cache",
+  ".turbo",
+  ".vercel",
+  ".svelte-kit",
+  ".astro",
+  "coverage",
+  "__tests__",
+  "__mocks__",
+]);
+
 function walkDir(dir: string): string[] {
   const files: string[] = [];
-  const skip = new Set(["node_modules", ".git", "dist", "build", ".next", ".cache", "coverage", "__tests__", "__mocks__"]);
   function walk(d: string) {
+    // Skip nested git repos — they're separate projects (e.g., submodules
+    // or cloned sandboxes) whose findings usually aren't actionable here.
+    if (d !== dir && fs.existsSync(path.join(d, ".git"))) return;
     for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
-      if (entry.isDirectory() && !skip.has(entry.name)) walk(path.join(d, entry.name));
+      if (entry.isDirectory() && !SKIP_DIRS.has(entry.name)) walk(path.join(d, entry.name));
       else if (entry.isFile() && /\.(tsx?|jsx?)$/.test(entry.name)) files.push(path.join(d, entry.name));
     }
   }
@@ -222,8 +178,8 @@ function formatSARIF(matches: ScanMatch[], dir: string): string {
           name: "pulscheck",
           version: VERSION,
           informationUri: "https://github.com/Qubites/pulscheck",
-          rules: PATTERNS.map((p) => ({
-            id: p.name,
+          rules: SARIF_RULES.map((p) => ({
+            id: p.id,
             shortDescription: { text: p.risk },
             defaultConfiguration: {
               level: p.severity === "critical" ? "error" : p.severity === "warning" ? "warning" : "note",
@@ -305,7 +261,7 @@ Options:
   }
 
   if (!fs.existsSync(dir)) {
-    console.error(`Directory not found: ${dir}`);
+    console.error(`Path not found: ${dir}`);
     process.exit(1);
   }
 
@@ -321,12 +277,24 @@ Options:
   }
 
   const start = performance.now();
-  const files = walkDir(dir);
-  let matches: ScanMatch[] = [];
 
+  // Support both file and directory targets. Single-file mode is cheap
+  // and lets editor/hook integrations scan just the edited file.
+  const stat = fs.statSync(dir);
+  let files: string[];
+  let rootDir: string;
+  if (stat.isFile()) {
+    files = /\.(tsx?|jsx?)$/.test(dir) ? [dir] : [];
+    rootDir = path.dirname(dir);
+  } else {
+    files = walkDir(dir);
+    rootDir = dir;
+  }
+
+  let matches: ScanMatch[] = [];
   for (const file of files) {
     try {
-      matches.push(...scanFile(file, dir));
+      matches.push(...scanFile(file, rootDir));
     } catch (_) {}
   }
 

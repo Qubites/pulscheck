@@ -3,13 +3,11 @@
  *
  * Feed it a trace, it tells you what's wrong. No configuration needed.
  *
- * Detects 6 patterns:
+ * Detects 4 patterns:
  *   1. after-teardown   — event fires after a known cleanup/dispose/unmount
  *   2. response-reorder — responses arrive in different order than requests
  *   3. double-trigger   — same operation starts twice concurrently
- *   4. sequence-gap     — numbered sequences with missing entries
- *   5. stale-overwrite  — older operation's result overwrites newer one
- *   6. dangling-async   — operation started but never completed before scope teardown
+ *   4. dangling-async   — operation started but never completed before scope teardown
  *
  * @example
  *   import { tw, analyze } from 'pulscheck'
@@ -27,10 +25,7 @@ export type FindingPattern =
   | "after-teardown"
   | "response-reorder"
   | "double-trigger"
-  | "sequence-gap"
-  | "stale-overwrite"
-  | "dangling-async"
-  | "layout-thrash";
+  | "dangling-async";
 
 export interface Finding {
   pattern: FindingPattern;
@@ -369,112 +364,6 @@ function detectDoubleTrigger(sorted: readonly PulseEvent[]): Finding[] {
   return findings;
 }
 
-// ─── Pattern 4: Sequence gap ─────────────────────────────────────────
-
-function detectSequenceGap(trace: readonly PulseEvent[]): Finding[] {
-  const findings: Finding[] = [];
-
-  // Group by correlationId AND label — so ws:message and ws:server:sent
-  // are checked independently. A gap in ws:message [1,2,5,6] is a real gap
-  // even if ws:server:sent covers [3,4].
-  const groups = new Map<string, PulseEvent[]>();
-  for (const e of trace) {
-    if (!e.meta || typeof e.meta.seq !== "number") continue;
-    const key = `${e.correlationId}::${e.label}`;
-    const arr = groups.get(key) ?? [];
-    arr.push(e);
-    groups.set(key, arr);
-  }
-
-  for (const [key, events] of groups) {
-    const sorted = [...events].sort(
-      (a, b) => (a.meta!.seq as number) - (b.meta!.seq as number),
-    );
-
-    if (sorted.length < 2) continue;
-
-    const cid = sorted[0].correlationId;
-    const label = sorted[0].label;
-    const seqs = sorted.map((e) => e.meta!.seq as number);
-
-    for (let i = 1; i < seqs.length; i++) {
-      const gap = seqs[i] - seqs[i - 1];
-      if (gap > 1) {
-        findings.push({
-          pattern: "sequence-gap",
-          severity: "critical",
-          fix: "Handle reconnection gaps: re-fetch missed data after WebSocket reconnect, or request a replay of the missing sequence range from the server.",
-          summary: `Sequence gap in "${label}": ${gap - 1} missing between seq ${seqs[i - 1]} and ${seqs[i]} (cid: ${cid})`,
-          detail:
-            `"${label}" events with correlationId "${cid}" have sequence numbers [${seqs.join(", ")}]. ` +
-            `${gap - 1} item(s) are missing between positions ${seqs[i - 1]} and ${seqs[i]}. ` +
-            `This often indicates dropped messages, lost events, or a reconnect gap.`,
-          events: [sorted[i - 1], sorted[i]],
-          beatRange: [sorted[i - 1].beat, sorted[i].beat],
-        });
-      }
-    }
-  }
-
-  return findings;
-}
-
-// ─── Pattern 5: Stale overwrite ──────────────────────────────────────
-
-function detectStaleOverwrite(sorted: readonly PulseEvent[]): Finding[] {
-  const findings: Finding[] = [];
-
-  // Find render/update events
-  const renders = sorted.filter(isRender);
-  if (renders.length < 2) return findings;
-
-  // Group renders by label base
-  const byBase = new Map<string, PulseEvent[]>();
-  for (const r of renders) {
-    const base = labelBase(r.label);
-    const arr = byBase.get(base) ?? [];
-    arr.push(r);
-    byBase.set(base, arr);
-  }
-
-  for (const [base, renderEvents] of byBase) {
-    if (renderEvents.length < 2) continue;
-
-    // For each render, find its originating request by correlationId
-    for (let i = 0; i < renderEvents.length - 1; i++) {
-      const earlier = renderEvents[i];
-      const later = renderEvents[i + 1];
-
-      // Find the request that triggered each render
-      const earlierReq = sorted.find(
-        (e) => e.correlationId === earlier.correlationId && isRequest(e),
-      );
-      const laterReq = sorted.find(
-        (e) => e.correlationId === later.correlationId && isRequest(e),
-      );
-
-      // Stale overwrite: later render is from an OLDER request
-      if (earlierReq && laterReq && laterReq.beat < earlierReq.beat) {
-        findings.push({
-          pattern: "stale-overwrite",
-          severity: "critical",
-          fix: "Check data freshness before rendering: track the most recent request timestamp and discard responses from older requests. AbortController also prevents this by canceling the slow request entirely.",
-          summary: `Stale overwrite at "${base}": render from older request (${later.correlationId}) overwrote newer (${earlier.correlationId})`,
-          detail:
-            `Render at beat ${later.beat.toFixed(2)} is from request "${later.correlationId}" ` +
-            `(sent at beat ${laterReq.beat.toFixed(2)}), which is OLDER than the previous render's ` +
-            `request "${earlier.correlationId}" (sent at beat ${earlierReq.beat.toFixed(2)}). ` +
-            `The UI now shows stale data. Fix: abort older requests, or check sequence before rendering.`,
-          events: [laterReq, earlierReq, earlier, later],
-          beatRange: [laterReq.beat, later.beat],
-        });
-      }
-    }
-  }
-
-  return findings;
-}
-
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 function groupByCorrelation(
@@ -505,7 +394,7 @@ function metaEqual(
   return keysA.every((k) => a[k] === b[k]);
 }
 
-// ─── Pattern 6: Dangling async ──────────────────────────────────────
+// ─── Pattern 4: Dangling async ──────────────────────────────────────
 // Detects async operations (fetch, timers, WebSocket) that started
 // within a scope but never completed before the scope tore down.
 // This catches the exact gap where test frameworks declare "passed"
@@ -675,83 +564,6 @@ function detectDanglingAsync(trace: readonly PulseEvent[]): Finding[] {
   return findings;
 }
 
-// ─── Pattern 7: Layout Thrash ───────────────────────────────────────
-// Detects rapid DOM write→read cycles within a single synchronous frame.
-// Each cycle forces the browser to synchronously recalculate layout —
-// invisible on fast machines, catastrophic on phones.
-
-/** Max time (ms) between events to consider them in the same synchronous frame */
-const FRAME_WINDOW_MS = 16; // ~1 frame at 60fps
-/** Minimum write→read cycles to report */
-const THRASH_THRESHOLD = 3;
-
-function detectLayoutThrash(sorted: readonly PulseEvent[]): Finding[] {
-  const findings: Finding[] = [];
-
-  // Collect dom-write and dom-read events in chronological order
-  const domEvents = sorted.filter(
-    (e) => e.kind === "dom-write" || e.kind === "dom-read"
-  );
-  if (domEvents.length < THRASH_THRESHOLD * 2) return findings;
-
-  // Group into frames — events within FRAME_WINDOW_MS of each other
-  const frames: PulseEvent[][] = [];
-  let currentFrame: PulseEvent[] = [];
-
-  for (const e of domEvents) {
-    if (
-      currentFrame.length === 0 ||
-      e.beat - currentFrame[0].beat <= FRAME_WINDOW_MS
-    ) {
-      currentFrame.push(e);
-    } else {
-      frames.push(currentFrame);
-      currentFrame = [e];
-    }
-  }
-  if (currentFrame.length > 0) frames.push(currentFrame);
-
-  // Analyze each frame for write→read cycles
-  for (const frame of frames) {
-    let cycles = 0;
-    const properties = new Set<string>();
-    let lastWasDomWrite = false;
-
-    for (const e of frame) {
-      if (e.kind === "dom-write") {
-        lastWasDomWrite = true;
-      } else if (e.kind === "dom-read" && lastWasDomWrite) {
-        cycles++;
-        const prop = e.meta?.property;
-        if (typeof prop === "string") properties.add(prop);
-        lastWasDomWrite = false;
-      }
-    }
-
-    if (cycles < THRASH_THRESHOLD) continue;
-
-    const propList = [...properties].join(", ");
-    const severity: FindingSeverity = cycles >= 5 ? "critical" : "warning";
-
-    findings.push({
-      pattern: "layout-thrash",
-      severity,
-      summary: `${cycles} forced reflows in a single frame`,
-      detail: `Detected ${cycles} DOM write\u2192read cycles within ${FRAME_WINDOW_MS}ms. ` +
-        `Properties read: ${propList || "(unknown)"}. Each cycle forces the browser to ` +
-        `synchronously recalculate layout before returning the value. On mobile devices ` +
-        `this can block the main thread for tens of milliseconds per cycle.`,
-      fix: `Batch reads and writes separately. Read all values first, then apply writes. ` +
-        `Use a WeakMap cache for repeated reads, or use a scheduling library like fastdom ` +
-        `to automatically batch DOM operations.`,
-      events: frame,
-      beatRange: [frame[0].beat, frame[frame.length - 1].beat],
-    });
-  }
-
-  return findings;
-}
-
 // ─── Fingerprinting ─────────────────────────────────────────────────
 // Single source of truth. Used by reporter (session dedup) and tracker (persistence).
 
@@ -783,17 +595,14 @@ export function analyze(
   const suppress = new Set(opts.suppress ?? []);
   const minSev = opts.minSeverity ?? "info";
 
-  // Sort once — 3 detectors need chronological order. Avoids 3 redundant copies.
+  // Sort once — 2 detectors need chronological order. Avoids 2 redundant copies.
   const sorted = [...trace].sort((a, b) => a.beat - b.beat);
 
   const detectors: [FindingPattern, () => Finding[]][] = [
     ["after-teardown", () => detectAfterTeardown(trace)],
     ["response-reorder", () => detectResponseReorder(sorted)],
     ["double-trigger", () => detectDoubleTrigger(sorted)],
-    ["sequence-gap", () => detectSequenceGap(trace)],
-    ["stale-overwrite", () => detectStaleOverwrite(sorted)],
     ["dangling-async", () => detectDanglingAsync(trace)],
-    ["layout-thrash", () => detectLayoutThrash(sorted)],
   ];
 
   const severityOrder: Record<FindingSeverity, number> = {

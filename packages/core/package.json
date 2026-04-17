@@ -1,7 +1,7 @@
 {
   "name": "pulscheck",
   "version": "0.1.0",
-  "description": "Runtime race condition detection for frontend apps. One function call, seven detectors, zero config.",
+  "description": "Runtime race condition detection for frontend apps. One function call, four detectors, zero config.",
   "keywords": [
     "race-condition",
     "async",
@@ -10,7 +10,6 @@
     "react",
     "frontend",
     "runtime-analysis",
-    "layout-thrashing",
     "stale-closure",
     "developer-tools"
   ],

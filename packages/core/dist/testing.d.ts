@@ -174,13 +174,11 @@ interface InstrumentOptions {
  *
  * Feed it a trace, it tells you what's wrong. No configuration needed.
  *
- * Detects 6 patterns:
+ * Detects 4 patterns:
  *   1. after-teardown   — event fires after a known cleanup/dispose/unmount
  *   2. response-reorder — responses arrive in different order than requests
  *   3. double-trigger   — same operation starts twice concurrently
- *   4. sequence-gap     — numbered sequences with missing entries
- *   5. stale-overwrite  — older operation's result overwrites newer one
- *   6. dangling-async   — operation started but never completed before scope teardown
+ *   4. dangling-async   — operation started but never completed before scope teardown
  *
  * @example
  *   import { tw, analyze } from 'pulscheck'
@@ -190,7 +188,7 @@ interface InstrumentOptions {
  */
 
 type FindingSeverity = "critical" | "warning" | "info";
-type FindingPattern = "after-teardown" | "response-reorder" | "double-trigger" | "sequence-gap" | "stale-overwrite" | "dangling-async";
+type FindingPattern = "after-teardown" | "response-reorder" | "double-trigger" | "dangling-async";
 interface Finding {
     pattern: FindingPattern;
     severity: FindingSeverity;
@@ -275,7 +273,7 @@ interface PulsCheckResult {
     /**
      * Assert a specific pattern was detected.
      * Useful for testing that your instrumentation actually catches a known bug.
-     * @example result.expectPattern('stale-overwrite')
+     * @example result.expectPattern('after-teardown')
      */
     expectPattern(pattern: string): void;
     /**

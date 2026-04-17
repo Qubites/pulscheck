@@ -1,17 +1,17 @@
 # Changelog
 
-## 0.1.0 (2026-04-12)
+## 0.1.0 (unreleased)
 
 Initial public release.
 
 ### Runtime Detector
-- 5 heuristic pattern detectors: after-teardown, response-reorder, double-trigger, sequence-gap, stale-overwrite
-- Auto-instrumentation of fetch, setTimeout, setInterval, clearTimeout, clearInterval, addEventListener, WebSocket
-- Call site attribution (file:line for both sides of the race)
-- Per-endpoint generation tracking for sink-awareness (warning vs critical severity)
-- Ring buffer with O(1) memory (10k events, ~2MB)
-- Dynamic URL normalization (/user/123 and /user/456 detected as same endpoint)
-- Structural deduplication via fingerprinting
+- 4 heuristic pattern detectors: after-teardown, response-reorder, double-trigger, dangling-async
+- Auto-instrumentation of fetch, setTimeout, setInterval, clearTimeout, clearInterval, addEventListener, removeEventListener, WebSocket
+- Call site attribution (file:line for both sides of the race, extracted from stack traces)
+- Per-endpoint generation tracking for sink-awareness (warning vs critical severity on response-reorder)
+- Ring buffer with O(1) insertion (10k events, configurable via `registry.configure({ maxTrace })`)
+- Dynamic URL normalization (/user/123 and /user/456 grouped as the same endpoint)
+- Structural deduplication via fingerprinting — one finding per bug, not per occurrence
 
 ### React Integration
 - `devMode()` — one-line activation
@@ -20,18 +20,10 @@ Initial public release.
 - `usePulse()`, `usePulseMount()`, `usePulseMeasure()` — manual pulse hooks
 
 ### CLI Scanner
-- 9 static detection rules for CI pipelines
+- 1 cleanup-aware AST rule: `fetch-no-abort-in-effect` (fetch inside useEffect without AbortController)
 - Text, JSON, and SARIF 2.1.0 output formats
 - GitHub Code Scanning integration via SARIF upload
 - `--severity`, `--fail-on`, `--ignore`, `--quiet` options
 
-### GitHub Action
-- `Qubites/pulscheck/action` composite action
-- Auto SARIF upload to GitHub Code Scanning
-- PR summary comment with finding counts
-
-### Testing
-- 345 tests across 20 test files
-- 15-scenario blind audit (80% detection rate, external sources)
-- 7-scenario live browser validation via Playwright
-- Before/after production app scan (3 findings → 0 after fix)
+The timer/listener siblings (`setTimeout`, `setInterval`, `addEventListener`) are already
+well-covered by `@eslint-react/eslint-plugin`'s `no-leaked-*` rules, and we do not duplicate them.

@@ -80,7 +80,7 @@ tw.checkpoint('onboarding', 2, { lane: 'ui' })
 tw.checkpoint('onboarding', 3, { lane: 'ui' })
 ```
 
-**Note:** the `sequence-gap` detector looks for `meta.seq` (not `meta.step`). `tw.checkpoint` does **not** currently feed the sequence-gap detector — to make sequence-gap fire, emit events with `tw.pulse(label, { meta: { seq } })` directly.
+**Note:** `tw.checkpoint` is a labeling convenience — the four shipped detectors don't consume `meta.step`. If you want to correlate checkpoints with a fetch that was torn down, the `after-teardown` and `dangling-async` detectors reason about `parentId` / scope teardown, not step numbers.
 
 ## tw.scope(name, options?)
 

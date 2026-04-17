@@ -59,7 +59,7 @@ PulsCheck puts a tiny heartbeat monitor on your app:
                   🚨 RESPONSE REORDER DETECTED
 ```
 
-## The seven bugs PulsCheck catches
+## The four bugs PulsCheck catches
 
 ### 1. Ghost Callback (after-teardown)
 
@@ -102,40 +102,11 @@ A component kicks off a fetch, timer, or listener — then unmounts before it fi
               handler still attached ← leak
 ```
 
-### 5. Missing Message (sequence-gap)
-
-WebSocket messages arrive with gaps.
-
-```
-  msg 1 ✓  msg 2 ✓  msg 3 ???  msg 4 ✓
-```
-
-### 6. Time Travel (stale-overwrite)
-
-Screen shows fresh data, then flips back to old data.
-
-```
-  "DKK 800" (correct) ──► "DKK 1,200" (stale!)
-```
-
-### 7. Layout Thrash (layout-thrash)
-
-DOM writes and reads interleaved, forcing the browser to recalculate layout repeatedly.
-
-```
-  el.style.width = "100px"     ← write (dirty)
-  x = el.offsetWidth           ← read  (forced reflow!)
-  el.style.width = "200px"     ← write (dirty again)
-  y = el.offsetWidth           ← read  (forced reflow again!)
-  el.style.width = "300px"     ← write
-  z = el.offsetWidth           ← read  (3rd reflow — flagged!)
-```
-
 ## What you see in the console
 
 When PulsCheck finds a bug, it prints a warning in your browser console with:
 
-1. **What pattern** — which of the 7 bugs was detected
+1. **What pattern** — which of the 4 bugs was detected
 2. **Where it lives** — file and line for both sides of the collision (extracted from stack traces at the moment the event fired)
 3. **What happened** — plain-English description
 4. **What to do** — concrete code fix

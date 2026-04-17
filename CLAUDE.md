@@ -6,8 +6,6 @@ Runtime race condition detection for frontend apps. Published from `packages/cor
 
 - `packages/core` — the library (`pulscheck` on npm). Built with `tsup`, tested with `vitest`.
 - `docs/` — VitePress site published to pulscheck.qubites.io.
-- `action/` — GitHub Action wrapper.
-- `paper/` — research paper sources (`PAPER.md`, `pulscheck.tex`).
 - `temporal-watcher/` — separate nested git repo; not part of this workspace. Ignore unless explicitly asked.
 
 npm workspaces are enabled. `packages/core` is the only workspace; its package name is `pulscheck`, so workspace commands use `-w pulscheck`.
@@ -20,7 +18,7 @@ Always run these from the repo root (`/Users/olivernordsve/Github/pulscheck`).
 
 | Command | What it does |
 | --- | --- |
-| `npm run test -w pulscheck` | Run the vitest suite (`vitest run`). |
+| `npm run test -w pulscheck` | Run the vitest suite (`vitest run`). Fast, Node only. |
 | `npm run typecheck -w pulscheck` | TypeScript typecheck, no emit. |
 | `npm run build -w pulscheck` | Build the library with `tsup` into `packages/core/dist`. |
 

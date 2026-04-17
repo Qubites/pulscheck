@@ -76,7 +76,7 @@ export interface PulsCheckResult {
   /**
    * Assert a specific pattern was detected.
    * Useful for testing that your instrumentation actually catches a known bug.
-   * @example result.expectPattern('stale-overwrite')
+   * @example result.expectPattern('after-teardown')
    */
   expectPattern(pattern: string): void;
 
