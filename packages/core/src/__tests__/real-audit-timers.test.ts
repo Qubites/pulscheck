@@ -3,7 +3,7 @@
  *
  * Every test reproduces a REAL bug pattern from a real GitHub repo.
  * instrument() patches real setTimeout/setInterval — we NEVER call tw.pulse().
- * Whatever analyze() finds is the honest, unbiased result.
+ * Whatever analyze() finds is the unbiased result.
  *
  * Bug categories:
  *   - setInterval not cleared on unmount

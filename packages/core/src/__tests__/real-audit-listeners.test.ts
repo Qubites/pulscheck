@@ -3,7 +3,7 @@
  *
  * Every test reproduces a REAL bug pattern from a real GitHub repo.
  * instrument() patches real addEventListener — we NEVER call tw.pulse().
- * Whatever analyze() finds is the honest, unbiased result.
+ * Whatever analyze() finds is the unbiased result.
  *
  * Bug categories:
  *   - addEventListener without removeEventListener on unmount

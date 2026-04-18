@@ -76,7 +76,7 @@ That's it. Open the console during dev. If a race happens during your session, y
 
 ### What it is and isn't
 
-**Prevention beats detection every time.** If your whole app goes through TanStack Query / SWR / React Query with correct cache keys, plus `AbortController` in every effect, most of these races can't exist — and you probably don't need PulsCheck. That's not a dig at PulsCheck, it's the honest state of things: you've eliminated the class of bug at the source.
+**Prevention beats detection every time.** If your whole app goes through TanStack Query / SWR / React Query with correct cache keys, plus `AbortController` in every effect, most of these races can't exist — and you probably don't need PulsCheck. That's not a dig at PulsCheck, it's the state of things: you've eliminated the class of bug at the source.
 
 PulsCheck earns its keep in:
 
@@ -170,7 +170,7 @@ if (import.meta.env.DEV) devMode();
 
 Findings land in the console with file:line for *both* sides of the collision.
 
-**Honest caveat:** if you use TanStack Query / SWR / React Query religiously, most of this won't find anything — prevention beats detection, those libs kill these races at the source. This is for mixed codebases, teams without strong async discipline, and reproducing flaky races you already suspect.
+**Caveat:** if you use TanStack Query / SWR / React Query religiously, most of this won't find anything — prevention beats detection, those libs kill these races at the source. This is for mixed codebases, teams without strong async discipline, and reproducing flaky races you already suspect.
 
 GitHub: https://github.com/Qubites/pulscheck  
 Docs: https://pulscheck.qubites.io
@@ -207,7 +207,7 @@ both sides.
 
 The thesis is that runtime races (stale responses, after-unmount fetches, double-triggers) live 
 between events, not in code — so linters and Sentry can't see them. Four detectors, one function 
-call, honest about being redundant if you TanStack-Query everything.
+call, redundant by design if you TanStack-Query everything.
 
 Would love your take, especially on false positives or race shapes I'm missing. No ask beyond 
 "try it for 5 minutes in one of your apps if you have time."

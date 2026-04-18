@@ -40,6 +40,7 @@ export default defineConfig({
         text: 'Research',
         items: [
           { text: 'Research & Validation', link: '/research' },
+          { text: 'v0.1.0 Findings', link: '/research/v0.1-findings' },
         ],
       },
     ],

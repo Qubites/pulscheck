@@ -26,7 +26,7 @@
  *      `.abort()` on anything? If so, treat them as cleaned up.
  *   5. Report every unclean `fetch` call.
  *
- * Limitations (honest list):
+ * Limitations:
  *   - Does not follow calls out of the effect body. If `fetch` lives in a
  *     helper defined outside the effect, we miss it. Cross-function
  *     analysis is the largest remaining miss class.

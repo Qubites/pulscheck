@@ -1,5 +1,7 @@
 # Research & Validation
 
+**See also:** [v0.1.0 Findings](/research/v0.1-findings) — retrospective on what was built, what was cut, and where the gaps are.
+
 ## Install
 
 ```bash
