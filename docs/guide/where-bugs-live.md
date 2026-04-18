@@ -104,14 +104,14 @@ PulsCheck inserts itself at the eight global functions that asynchronous JavaScr
               Ring buffer (10,000 events)
                          │
                          ▼
-              Seven pattern detectors run
+              Four pattern detectors run
               over the observed event order
                          │
                          ▼
               Finding[] → console (dev only)
 ```
 
-The key phrase is **observed event order**. PulsCheck is not looking at your code. It is looking at the actual sequence of events your app produced during a live session, and asking whether that sequence contains any of seven known race-condition shapes.
+The key phrase is **observed event order**. PulsCheck is not looking at your code. It is looking at the actual sequence of events your app produced during a live session, and asking whether that sequence contains any of four known race-condition shapes.
 
 That is the layer no other tool occupies. Linters cannot reach it — it does not exist at their analysis time. Server APM cannot reach it — it is not on the server. Error monitoring cannot reach it — the bugs do not throw. Chrome DevTools exposes the raw material, but a human has to read it.
 
