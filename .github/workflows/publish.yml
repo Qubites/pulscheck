@@ -19,17 +19,17 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org
 
-      - name: Install dependencies
+      - name: Install dependencies (workspace root)
         run: npm install
-        working-directory: packages/core
 
       - name: Typecheck
-        run: npm run typecheck
-        working-directory: packages/core
+        run: npm run typecheck -w pulscheck
+
+      - name: Test
+        run: npm run test -w pulscheck
 
       - name: Build
-        run: npm run build
-        working-directory: packages/core
+        run: npm run build -w pulscheck
 
       - name: Verify dist
         run: |
