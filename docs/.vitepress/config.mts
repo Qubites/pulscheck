@@ -24,6 +24,7 @@ export default defineConfig({
           { text: 'How It Works', link: '/guide/how-it-works' },
           { text: 'React Integration', link: '/guide/react' },
           { text: 'CLI', link: '/guide/cli' },
+          { text: 'Pre-commit hooks', link: '/guide/pre-commit' },
         ],
       },
       {
